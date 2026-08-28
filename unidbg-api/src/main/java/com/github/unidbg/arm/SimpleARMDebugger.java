@@ -5,6 +5,7 @@ import com.github.unidbg.Emulator;
 import com.github.unidbg.Module;
 
 import com.github.unidbg.arm.backend.Backend;
+import com.github.unidbg.arm.backend.Capability;
 import com.github.unidbg.arm.backend.BackendException;
 import com.github.unidbg.debugger.DebugRunnable;
 import com.github.unidbg.debugger.Debugger;
@@ -26,6 +27,13 @@ class SimpleARMDebugger extends AbstractARMDebugger implements Debugger {
 
     SimpleARMDebugger(Emulator<?> emulator) {
         super(emulator);
+        // 能力守卫(P3): 调试器依赖指令级 CodeHook, 不支持的后端立即报明确错误
+        if (!emulator.getBackend().capabilities().contains(Capability.CODE_HOOK)) {
+            throw new BackendException("Backend "
+                    + emulator.getBackend().getClass().getSimpleName()
+                    + " does not support " + Capability.CODE_HOOK
+                    + " (debugger unavailable). Use Unicorn2Backend or remove emulator.attach() calls.");
+        }
     }
 
     @Override

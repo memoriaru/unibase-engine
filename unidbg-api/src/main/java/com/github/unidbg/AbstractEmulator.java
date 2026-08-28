@@ -2,6 +2,8 @@ package com.github.unidbg;
 
 import com.github.unidbg.arm.ARMSvcMemory;
 import com.github.unidbg.arm.backend.Backend;
+import com.github.unidbg.arm.backend.BackendException;
+import com.github.unidbg.arm.backend.Capability;
 import com.github.unidbg.arm.backend.BackendFactory;
 import com.github.unidbg.arm.backend.ReadHook;
 import com.github.unidbg.arm.backend.WriteHook;
@@ -202,8 +204,21 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
         return traceRead(begin, end, null);
     }
 
+    /**
+     * 能力守卫(P3): 后端不支持所需能力时, 立即抛出带指引的异常 —— 替代
+     * 运行中途的裸 UnsupportedOperationException/原生崩溃。
+     */
+    private void requireCapability(Capability capability) {
+        if (!backend.capabilities().contains(capability)) {
+            throw new BackendException("Backend " + backend.getClass().getSimpleName()
+                    + " does not support " + capability + " (capabilities=" + backend.capabilities()
+                    + "). Use a backend that declares this capability, e.g. Unicorn2.");
+        }
+    }
+
     @Override
     public TraceHook traceRead(long begin, long end, TraceReadListener listener) {
+        requireCapability(Capability.READ_HOOK);
         TraceMemoryHook hook = new TraceMemoryHook(true);
         if (listener != null) {
             hook.traceReadListener = listener;
@@ -253,6 +268,7 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
 
     @Override
     public TraceHook traceWrite(long begin, long end, TraceWriteListener listener) {
+        requireCapability(Capability.WRITE_HOOK);
         TraceMemoryHook hook = new TraceMemoryHook(false);
         if (listener != null) {
             hook.traceWriteListener = listener;
@@ -283,6 +299,7 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
 
     @Override
     public TraceHook traceCode(long begin, long end, TraceCodeListener listener) {
+        requireCapability(Capability.CODE_HOOK);
         AssemblyCodeDumper hook = new AssemblyCodeDumper(this, begin, end, listener);
         backend.hook_add_new(hook, begin, end, this);
         return hook;

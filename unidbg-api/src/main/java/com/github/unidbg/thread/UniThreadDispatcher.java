@@ -119,12 +119,33 @@ public class UniThreadDispatcher implements ThreadDispatcher {
     }
 
     private Number run(long timeout, TimeUnit unit) {
+        Number mainRet = null;
+        boolean mainDone = false;
+        // drain 保护(P3): 主任务完成后, 后台线程调度有时间预算与无进展退出 ——
+        // 防止常驻线程(心跳/上报类)或跑飞线程导致无限调度 hang 死
+        final long drainBudgetMs = Long.getLong("unibase.threads.drainTimeout", 10000L);
+        long mainDoneAt = 0;
+        int idleRounds = 0;
         try {
             long start = System.currentTimeMillis();
             while (true) {
+                if (taskList.isEmpty() && mainDone) {
+                    // 主任务已完成且无剩余任务 —— 正常收尾
+                    return mainRet;
+                }
                 if (taskList.isEmpty()) {
+                    if (mainDone) {
+                        return mainRet;
+                    }
                     throw new IllegalStateException();
                 }
+                if (mainDone && drainBudgetMs > 0
+                        && System.currentTimeMillis() - mainDoneAt > drainBudgetMs) {
+                    log.info("drain timeout ({}ms), {} background task(s) abandoned",
+                            drainBudgetMs, taskList.size());
+                    return mainRet;
+                }
+                int dispatchedThisRound = 0;
                 for (Iterator<Task> iterator = taskList.iterator(); iterator.hasNext(); ) {
                     Task task = iterator.next();
                     if (task.isFinish()) {
@@ -162,6 +183,7 @@ public class UniThreadDispatcher implements ThreadDispatcher {
 
                         try {
                             this.runningTask = task;
+                            dispatchedThisRound++;
                             Number ret = task.dispatch(emulator);
                             log.debug("End dispatch task={}, ret={}", task, ret);
                             if (ret != null) {
@@ -169,7 +191,12 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                                 task.destroy(emulator);
                                 iterator.remove();
                                 if(task.isMainThread()) {
-                                    return ret;
+                                    // 主任务完成(P3): 不再立即返回 —— 继续调度已创建的
+                                    // 后台线程直至自然结束(SO 异步初始化依赖此语义),
+                                    // mainRet 在循环退出条件处返回
+                                    mainRet = ret;
+                                    mainDone = true;
+                                    mainDoneAt = System.currentTimeMillis();
                                 }
                             } else {
                                 task.saveContext(emulator);
@@ -188,6 +215,19 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                     }
                 }
 
+                if (mainDone) {
+                    // 无进展保护: 本轮没有任何任务可调度(全部 waiter 阻塞/挂起) → 退出
+                    if (dispatchedThisRound == 0) {
+                        if (++idleRounds >= 3) {
+                            log.info("drain idle: no runnable background task, {} abandoned",
+                                    taskList.size());
+                            return mainRet;
+                        }
+                    } else {
+                        idleRounds = 0;
+                    }
+                }
+                dispatchedThisRound = 0;
                 Collections.reverse(threadTaskList);
                 for (Iterator<ThreadTask> iterator = threadTaskList.iterator(); iterator.hasNext(); ) {
                     taskList.add(0, iterator.next());
@@ -196,9 +236,12 @@ public class UniThreadDispatcher implements ThreadDispatcher {
 
                 if (timeout > 0 && unit != null &&
                         System.currentTimeMillis() - start >= unit.toMillis(timeout)) {
-                    return null;
+                    return mainRet;
                 }
                 if (taskList.isEmpty()) {
+                    if (mainDone) {
+                        return mainRet;
+                    }
                     return null;
                 }
 

@@ -546,7 +546,20 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
         child_stack = child_stack.share(8, 0);
 
         if (threadDispatcherEnabled) {
-            throw new UnsupportedOperationException();
+            // 接入协作式调度(阶段3): ARM64 pthread 路径与 bionic_clone 同构,
+            // 线程函数 fn(arg) 由调度器驱动执行 —— 此前抛异常假失败导致
+            // SO 的后台线程(种子树初始化)永不运行
+            Pointer tls = context.getPointerArg(3);          // CLONE_SETTLS
+            Pointer ctid = context.getPointerArg(4);         // CLONE_CHILD_CLEARTID
+            UnidbgPointer thread = tls instanceof UnidbgPointer ? (UnidbgPointer) tls : null;
+            emulator.getThreadDispatcher().addThread(
+                    new com.github.unidbg.linux.thread.MarshmallowThread(emulator, fn, thread, ctid, threadId));
+            if (ctid != null) {
+                ctid.setInt(0, threadId);
+            }
+            System.out.println("[THREADS] pthread_clone dispatched tid=" + threadId
+                    + " fn=0x" + Long.toHexString(fn.peer) + " tls=" + tls);
+            return threadId;
         }
 
         log.info("pthread_clone child_stack={}, thread_id={}, fn={}, arg={}, flags={}", child_stack, threadId, fn, arg, list);
@@ -650,6 +663,7 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
             if (verbose) {
                 System.out.printf("bionic_clone fn=%s, LR=%s%n", fn, context.getLRPointer());
             }
+            System.out.println("[THREADS] bionic_clone dispatched tid=" + threadId + " fn=" + fn);
             emulator.getThreadDispatcher().addThread(new MarshmallowThread(emulator, fn, arg, ctid, threadId));
         }
         ctid.setInt(0, threadId);

@@ -381,4 +381,13 @@ public interface Backend {
         return false;
     }
 
+    /**
+     * 后端能力声明(阶段3 能力协商)。
+     * 默认全能力 —— 保持既有语义(未声明的后端假定全部可用, 行为与引入前一致);
+     * 后端实现应精确声明, 调用方装 hook 前查询以优雅降级。
+     */
+    default java.util.Set<Capability> capabilities() {
+        return Capability.all();
+    }
+
 }

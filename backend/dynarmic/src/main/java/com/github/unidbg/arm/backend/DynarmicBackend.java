@@ -166,6 +166,20 @@ public abstract class DynarmicBackend extends FastBackend implements Backend, Dy
         }
     }
 
+    /** 精确声明(阶段3 能力协商): 不支持指令级/读写/块 hook 与调试器
+     *  (实测抛异常或静默无效); 支持内存事件/中断 hook 与上下文快照
+     *  (快照原语可用 —— hongguo 基线实测)。 */
+    public static final java.util.Set<Capability> CAPABILITIES = java.util.Collections.unmodifiableSet(
+            java.util.EnumSet.of(
+                    Capability.EVENT_MEM_HOOK,
+                    Capability.INTERRUPT_HOOK,
+                    Capability.CONTEXT_SNAPSHOT));
+
+    @Override
+    public java.util.Set<Capability> capabilities() {
+        return CAPABILITIES;
+    }
+
     @Override
     public void hook_add_new(CodeHook callback, long begin, long end, Object user_data) {
         throw new UnsupportedOperationException();

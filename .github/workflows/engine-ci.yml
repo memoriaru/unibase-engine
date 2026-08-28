@@ -1,0 +1,35 @@
+name: engine-ci
+
+# P0 阶段 0 CI 矩阵: 后端(Unicorn2/Dynarmic) × OS(linux/mac)
+# CI 跑 unidbg 原生测试套件; hongguo 基线(专有样本)仅本地验证, 不入库不进 CI:
+#   本地: ./gradlew :unidbg-android:smokeTest -Pbackend=unicorn2
+on:
+  push:
+    branches: [master, 'unibase/**']
+  pull_request:
+
+jobs:
+  backend-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        backend: [unicorn2, dynarmic]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Assemble (release=8, temurin 21 工具链)
+        run: ./gradlew assemble --no-daemon
+
+      - name: Backend tests (${{ matrix.backend }})
+        run: ./gradlew :backend:${{ matrix.backend }}:test --no-daemon
+
+      - name: unidbg 原生测试 (${{ matrix.backend }})
+        # -Pbackend 透传给需要后端的系统属性; api/android/ios 为上游既有测试
+        run: ./gradlew :unidbg-api:test :unidbg-android:test :unidbg-ios:test -Pbackend=${{ matrix.backend }} --no-daemon

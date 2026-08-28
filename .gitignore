@@ -19,3 +19,12 @@
 /unidbg-ios/src/test/resources/native/swift/swift_library-Swift.h
 /backend/hypervisor/src/main/native/hypervisor/cmake-build-debug/
 /backend/hypervisor/src/main/native/hypervisor/.idea/
+
+# Gradle
+.gradle/
+build/
+
+# hongguo 基线样本(仅本地验证, 不入库: 专有 so 路径/golden 签名值)
+/unidbg-android/src/test/java/universal/
+/unidbg-android/src/test/java/unibase/
+/unidbg-android/src/test/java/com/github/unidbg/android/utils/

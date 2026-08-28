@@ -28,6 +28,8 @@ public class BionicThread extends ThreadTask {
     private final UnidbgPointer arg;
     private final Pointer tls;
     private final boolean continueMode;
+    private Long rawEntryPC;     // rawContext 模式: 子线程初始 PC(clone 返回点)
+    private UnidbgPointer rawStack; // rawContext 模式: 子线程初始 SP(child_stack)
     private Pointer tidptr;
 
     public BionicThread(Emulator<?> emulator, UnidbgPointer fn, UnidbgPointer arg,
@@ -59,8 +61,39 @@ public class BionicThread extends ThreadTask {
         return String.format("BionicThread tid=%d, fn=%s, arg=%s, tls=%s", id, fn, arg, tls);
     }
 
+    /**
+     * rawContext 模式(推荐): 手工构造子线程独立初始上下文, 完整复现
+     * ARM64 kernel clone 语义 ——
+     *   PC  = clone wrapper 的 syscall 返回点(svc+4)
+     *   SP  = child_stack(libc wrapper 已压 fn/arg, 子线程 ldp 弹出)
+     *   X0  = 0(子线程 clone 返回值), TLS = CLONE_SETTLS
+     */
+    public static BionicThread rawContext(Emulator<?> emulator, long entryPC,
+                                          UnidbgPointer childStack, Pointer tls,
+                                          Pointer tidptr, int tid) {
+        BionicThread t = new BionicThread(emulator, null, null, tls, tidptr, tid, false);
+        t.rawEntryPC = entryPC;
+        t.rawStack = childStack;
+        return t;
+    }
+
     @Override
     protected Number runThread(AbstractEmulator<?> emulator) {
+        if (rawEntryPC != null) {
+            Backend backend = emulator.getBackend();
+            if (rawStack == null) {
+                throw new IllegalStateException("rawContext 缺少 child_stack");
+            }
+            backend.reg_write(unicorn.Arm64Const.UC_ARM64_REG_PC, rawEntryPC);
+            backend.reg_write(unicorn.Arm64Const.UC_ARM64_REG_SP, rawStack.peer);
+            backend.reg_write(unicorn.Arm64Const.UC_ARM64_REG_X0, 0);
+            if (tls instanceof UnidbgPointer) {
+                backend.reg_write(unicorn.Arm64Const.UC_ARM64_REG_TPIDR_EL0,
+                        ((UnidbgPointer) tls).peer);
+            }
+            backend.reg_write(unicorn.Arm64Const.UC_ARM64_REG_LR, until);
+            return emulator.emulate(rawEntryPC, until);
+        }
         if (continueMode) {
             // kernel clone 语义: 子线程上下文已在 handler 内 saveContext(PC=svc 后)。
             // 恢复后覆盖 X0=0(子线程 clone 返回值) —— 必须在 restore 之后,
@@ -72,11 +105,11 @@ public class BionicThread extends ThreadTask {
         }
         Backend backend = emulator.getBackend();
         UnidbgPointer stack = allocateStack(emulator);
-        // 诊断(P3): dump pthread_internal_t 前 0x40 字节 —— 定位 start_routine 实际偏移
+        // 诊断(P3): dump pthread_internal_t —— __pthread_start 读 start_routine@+0x60
         if (Boolean.getBoolean("unibase.threaddump") && arg != null) {
-            byte[] head = arg.getByteArray(0, 0x40);
+            byte[] head = arg.getByteArray(0, 0x80);
             StringBuilder sb = new StringBuilder("[THREADDUMP] tid=" + id + " arg=" + arg + " tls=" + tls + "\n");
-            for (int off = 0; off < 0x40; off += 8) {
+            for (int off = 0; off < 0x80; off += 8) {
                 long v = 0;
                 for (int b = 7; b >= 0; b--) v = (v << 8) | (head[off + b] & 0xFFL);
                 if (v != 0) sb.append(String.format("  +0x%02x = 0x%x%n", off, v));

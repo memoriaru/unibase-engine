@@ -551,12 +551,12 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
             // 跳 fn 会跑飞(hongguo 实证: PC=0)
             Pointer tls = context.getPointerArg(3);          // CLONE_SETTLS
             Pointer ctid = context.getPointerArg(4);         // CLONE_CHILD_CLEARTID
+            long entryPC = emulator.getBackend()
+                    .reg_read(Arm64Const.UC_ARM64_REG_PC).longValue() + 4; // svc 后返回点
+            UnidbgPointer childStack = context.getPointerArg(1); // wrapper 已压 fn/arg
             com.github.unidbg.linux.thread.BionicThread t =
-                    new com.github.unidbg.linux.thread.BionicThread(
-                            emulator, fn, arg, tls, ctid, threadId, true);
-            // 保存"svc 之后"的上下文为子线程起点(含 tid 作为父线程 clone 返回值);
-            // 子线程的 X0=0 由 BionicThread.runThread 在 restore 后覆盖
-            t.saveContext(emulator);
+                    com.github.unidbg.linux.thread.BionicThread.rawContext(
+                            emulator, entryPC, childStack, tls, ctid, threadId);
             emulator.getThreadDispatcher().addThread(t);
             if (ctid != null) {
                 ctid.setInt(0, threadId);
@@ -666,16 +666,16 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
             if (verbose) {
                 System.out.printf("bionic_clone fn=%s, LR=%s%n", fn, context.getLRPointer());
             }
-            // 实验(P3): ARM64 统一 continueMode —— child_stack[0]==fn 判据在
-            // SO 手搓 clone 下同样成立(libc wrapper 对任何调用者都压栈 fn/arg),
-            // fnMode 对手搓 clone 会跑飞 PC=0(THREADDUMP: start_routine=0)
-            System.out.println("[THREADS] bionic_clone dispatched(continueMode exp) tid=" + threadId);
+            // rawContext(P3): 与 pthread_clone 分支统一 —— kernel clone 语义,
+            // 子线程 = {PC: 返回点, SP: child_stack, X0: 0, TLS}
+            long entryPC = emulator.getBackend().reg_read(Arm64Const.UC_ARM64_REG_PC).longValue() + 4;
+            UnidbgPointer childStack = context.getPointerArg(1);
             com.github.unidbg.linux.thread.BionicThread t =
-                    new com.github.unidbg.linux.thread.BionicThread(
-                            emulator, fn, arg, tls, ctid, threadId, true);
-            emulator.getBackend().reg_write(Arm64Const.UC_ARM64_REG_X0, 0);
-            t.saveContext(emulator);
+                    com.github.unidbg.linux.thread.BionicThread.rawContext(
+                            emulator, entryPC, childStack, tls, ctid, threadId);
             emulator.getThreadDispatcher().addThread(t);
+            System.out.println("[THREADS] bionic_clone dispatched(rawContext) tid=" + threadId
+                    + " entryPC=0x" + Long.toHexString(entryPC) + " childStack=" + childStack);
         }
         ctid.setInt(0, threadId);
         return threadId;

@@ -1,5 +1,7 @@
 name: engine-ci
 
+# 注: 上游的 Jitpack workflow(向 jitpack.io 解析上游坐标的提交 SHA)在 fork 上必然失败,
+# 已在本分支删除; 上游合并若带回, 重新删除即可。
 # P0 阶段 0 CI 矩阵: 后端(Unicorn2/Dynarmic) × OS(linux/mac)
 # 范围说明(阶段0, 已知上游限制):
 # - assemble 双平台全模块: 构建健康基线

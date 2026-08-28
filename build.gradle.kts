@@ -28,12 +28,17 @@ subprojects {
         targetCompatibility = "8"
     }
 
-    // main 源码用 --release 8: 消除 java.lang.Module(9+) 与 com.github.unidbg.Module 的
-    // 二义性, 且保证上游源码真的只用 JDK8 API(可回馈)。
-    // 测试源码保持 source/target 模式: 样本/上游测试用了 Java 9+ API(readAllBytes 等),
-    // 运行时统一 JBR 21, 无 JDK8 部署需求。
+    // release 21(2026-08-29 决策): unibase 全栈统一 Java 21。
+    // - 上游可合并性保留: master 镜像分支不升; unibase/base 的功能性回馈 patch
+    //   不用 9+ 语法, 上游(source/target 8)照常编译
+    // - 通配 import + java.lang.Module 的二义性已修复(AbstractARMDebugger/
+    //   AndroidElfLoader/MachOLoader 改显式 import)
+    // - 消费方仅 platform(21 运行时), 字节码 65 无部署顾虑
     tasks.named<JavaCompile>("compileJava") {
-        options.release.set(8)
+        options.release.set(21)
+    }
+    tasks.named<JavaCompile>("compileTestJava") {
+        options.release.set(21)
     }
 
     tasks.withType<Test>().configureEach {

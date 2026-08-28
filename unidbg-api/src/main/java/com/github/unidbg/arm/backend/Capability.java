@@ -36,6 +36,6 @@ public enum Capability {
     ;
 
     public static java.util.Set<Capability> all() {
-        return java.util.EnumSet.allOf(Capability.class);
+        return Set.of(Capability.values());
     }
 }

@@ -63,8 +63,8 @@ enum arm_exception_class {
 #define ARM_EL_IL (1 << ARM_EL_IL_SHIFT)
 #define ARM_EL_ISV (1 << ARM_EL_ISV_SHIFT)
 
-static uint32_t syn_get_ec(uint32_t syn) {
-  return syn >> ARM_EL_EC_SHIFT;
+static uint32_t syn_get_ec(uint64_t syn) {
+  return (uint32_t) (syn >> ARM_EL_EC_SHIFT);
 }
 
 #define PSR_MODE_EL0t	0x00000000
@@ -75,7 +75,7 @@ static uint32_t syn_get_ec(uint32_t syn) {
 #define PSR_D_BIT	0x00000200
 
 typedef struct cpu_context {
-  vcpu_context ctx;
+  char ctx[0x1000]; // raw vcpu context buffer: macOS 15+ needs 0x1000 (up to VNCR page); legacy is 0x7C0
   uint64_t sp;
   uint64_t cpacr;
   uint64_t tpidr;

@@ -1,10 +1,6 @@
 package com.github.unidbg.linux;
 
-import com.github.unidbg.Alignment;
-import com.github.unidbg.Emulator;
-import com.github.unidbg.LibraryResolver;
-import com.github.unidbg.Module;
-import com.github.unidbg.Symbol;
+import com.github.unidbg.*;
 import com.github.unidbg.arm.ARM;
 import com.github.unidbg.arm.ARMEmulator;
 import com.github.unidbg.file.FileIO;
@@ -20,10 +16,7 @@ import com.github.unidbg.memory.MemoryBlock;
 import com.github.unidbg.memory.MemoryBlockImpl;
 import com.github.unidbg.memory.MemoryMap;
 import com.github.unidbg.pointer.UnidbgPointer;
-import com.github.unidbg.spi.AbstractLoader;
-import com.github.unidbg.spi.InitFunction;
-import com.github.unidbg.spi.LibraryFile;
-import com.github.unidbg.spi.Loader;
+import com.github.unidbg.spi.*;
 import com.github.unidbg.thread.Task;
 import com.github.unidbg.unix.IO;
 import com.github.unidbg.unix.UnixSyscallHandler;
@@ -121,7 +114,7 @@ public class AndroidElfLoader extends AbstractLoader<AndroidFileIO> implements M
         auxv.setPointer(emulator.getPointerSize(), __stack_chk_guard);
         final int AT_PAGESZ = 6;
         auxv.setPointer(emulator.getPointerSize() * 2L, UnidbgPointer.pointer(emulator, AT_PAGESZ));
-        auxv.setPointer(emulator.getPointerSize() * 3L, UnidbgPointer.pointer(emulator, emulator.getPageAlign()));
+        auxv.setPointer(emulator.getPointerSize() * 3L, UnidbgPointer.pointer(emulator, ARMEmulator.PAGE_ALIGN));
 
         List<String> envList = new ArrayList<>();
         for (String env : envs) {
@@ -415,7 +408,7 @@ public class AndroidElfLoader extends AbstractLoader<AndroidFileIO> implements M
                                 if (mMapListener != null) {
                                     mMapListener.onMap(base, off, UnicornConst.UC_PROT_NONE);
                                 }
-                                if (memoryMap.put(base, new MemoryMap(base, (int) off, UnicornConst.UC_PROT_NONE)) != null) {
+                                if (memoryMap.put(base, new MemoryMap(base, off, UnicornConst.UC_PROT_NONE)) != null) {
                                     log.warn("mem_map replace exists memory map base={}", Long.toHexString(base));
                                 }
                             }
@@ -586,7 +579,7 @@ public class AndroidElfLoader extends AbstractLoader<AndroidFileIO> implements M
                 case ARMEmulator.R_ARM_IRELATIVE:
                 case ARMEmulator.R_ARM_REL32:
                 default:
-                    log.warn("[" + soName + "]Unhandled relocation type " + type + ", symbol=" + symbol + ", relocationAddr=" + relocationAddr + ", offset=0x" + Long.toHexString(relocation.offset()) + ", addend=" + relocation.addend() + ", android=" + relocation.isAndroid());
+                    log.warn("[{}]Unhandled relocation type {}, symbol={}, relocationAddr={}, offset=0x{}, addend={}, android={}", soName, type, symbol, relocationAddr, Long.toHexString(relocation.offset()), relocation.addend(), relocation.isAndroid());
                     break;
             }
         }
@@ -638,8 +631,12 @@ public class AndroidElfLoader extends AbstractLoader<AndroidFileIO> implements M
         if (load_virtual_address == 0) {
             throw new IllegalStateException("load_virtual_address");
         }
+        InitFunctionFilter initFunctionFilter = null;
+        if(libraryResolver instanceof InitFunctionFilter) {
+            initFunctionFilter = (InitFunctionFilter) libraryResolver;
+        }
         LinuxModule module = new LinuxModule(load_virtual_address, load_base, size, soName, dynsym, list, initFunctionList, neededLibraries, regions,
-                armExIdx, ehFrameHeader, symbolTableSection, elfFile, dynamicStructure, libraryFile);
+                armExIdx, ehFrameHeader, symbolTableSection, elfFile, dynamicStructure, libraryFile, initFunctionFilter);
         for (ModuleSymbol symbol : resolvedSymbols) {
             symbol.relocation(emulator, module);
         }
@@ -758,6 +755,9 @@ public class AndroidElfLoader extends AbstractLoader<AndroidFileIO> implements M
     @Override
     public long mmap2(long start, int length, int prot, int flags, int fd, int offset) {
         int aligned = (int) ARM.alignSize(length, emulator.getPageAlign());
+        if (log.isDebugEnabled()) {
+            log.debug("mmap2: start=0x{}, length=0x{}, prot=0x{}, fd={}, offset=0x{}", Long.toHexString(start), Integer.toHexString(length), Integer.toHexString(prot), fd, Integer.toHexString(offset));
+        }
 
         boolean isAnonymous = ((flags & MAP_ANONYMOUS) != 0) || (start == 0 && fd <= 0 && offset == 0);
         if ((flags & MAP_FIXED) != 0 && isAnonymous) {
@@ -765,7 +765,18 @@ public class AndroidElfLoader extends AbstractLoader<AndroidFileIO> implements M
                 log.debug("mmap2 MAP_FIXED start=0x{}, length={}, prot={}", Long.toHexString(start), length, prot);
             }
 
-            munmap(start, length);
+            boolean hasOverlap = false;
+            for (MemoryMap map : memoryMap.values()) {
+                if (start < map.base + map.size && start + aligned > map.base) {
+                    hasOverlap = true;
+                    break;
+                }
+            }
+            if (hasOverlap) {
+                munmap(start, length);
+            } else if (log.isDebugEnabled()) {
+                log.debug("mmap2 MAP_FIXED no existing mapping at start=0x{}", Long.toHexString(start));
+            }
             backend.mem_map(start, aligned, prot);
             if (mMapListener != null) {
                 mMapListener.onMap(start, aligned, prot);
@@ -782,7 +793,7 @@ public class AndroidElfLoader extends AbstractLoader<AndroidFileIO> implements M
             }
             backend.mem_map(addr, aligned, prot);
             if (mMapListener != null) {
-                mMapListener.onMap(start, aligned, prot);
+                mMapListener.onMap(addr, aligned, prot);
             }
             if (memoryMap.put(addr, new MemoryMap(addr, aligned, prot)) != null) {
                 log.warn("memoryMap mmap2 replace exists memory map addr={}", Long.toHexString(addr));
@@ -812,12 +823,18 @@ public class AndroidElfLoader extends AbstractLoader<AndroidFileIO> implements M
             FileIO file;
             if (fd > 0 && (file = syscallHandler.getFileIO(fd)) != null) {
                 if ((start & (emulator.getPageAlign() - 1)) != 0) {
+                    if (log.isDebugEnabled()) {
+                        log.warn("mmap2 start=0x{}, start=0x{}, flags=0x{}, length=0x{}", Long.toHexString(start), Long.toHexString(start), Integer.toHexString(flags), Integer.toHexString(length));
+                    }
                     return MAP_FAILED;
                 }
                 long end = start + length;
                 for (Map.Entry<Long, MemoryMap> entry : memoryMap.entrySet()) {
                     MemoryMap map = entry.getValue();
                     if (Math.max(start, entry.getKey()) <= Math.min(map.base + map.size, end)) {
+                        if (log.isDebugEnabled()) {
+                            log.warn("mmap2 start=0x{}, entry={}, flags=0x{}, length=0x{}", Long.toHexString(start), entry, Integer.toHexString(flags), Integer.toHexString(length));
+                        }
                         return MAP_FAILED;
                     }
                 }
@@ -837,7 +854,7 @@ public class AndroidElfLoader extends AbstractLoader<AndroidFileIO> implements M
             throw new IllegalStateException(e);
         }
 
-        emulator.attach().debug();
+        emulator.attach().debug("mmap2 failed: start=0x" + Long.toHexString(start) + ", length=" + length + ", prot=0x" + Integer.toHexString(prot) + ", flags=0x" + Integer.toHexString(flags) + ", fd=" + fd + ", offset=" + offset);
         throw new AbstractMethodError("mmap2 start=0x" + Long.toHexString(start) + ", length=" + length + ", prot=0x" + Integer.toHexString(prot) + ", flags=0x" + Integer.toHexString(flags) + ", fd=" + fd + ", offset=" + offset);
     }
 

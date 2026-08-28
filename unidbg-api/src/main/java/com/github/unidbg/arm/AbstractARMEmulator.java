@@ -66,7 +66,7 @@ public abstract class AbstractARMEmulator<T extends NewFileIO> extends AbstractE
                 RegisterContext context = getContext();
                 log.warn("{} memory failed: address=0x{}, size={}, value=0x{}, PC={}, LR={}", unmappedType, Long.toHexString(address), size, Long.toHexString(value), context.getPCPointer(), context.getLRPointer());
                 if (LoggerFactory.getLogger(AbstractEmulator.class).isDebugEnabled()) {
-                    attach().debug();
+                    attach().debug(unmappedType + " memory failed: address=0x" + Long.toHexString(address) + ", size=" + size);
                 }
                 return false;
             }

@@ -1,9 +1,11 @@
 package com.github.unidbg.arm.backend.hypervisor.arm64;
 
-import capstone.api.Disassembler;
+import capstone.api.Instruction;
 
 public interface MemorySizeDetector {
 
-    int detectReadSize(Disassembler disassembler, byte[] code, long pc);
+    int detectReadSize(Instruction insn);
+
+    int detectWriteSize(Instruction insn);
 
 }

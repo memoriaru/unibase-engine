@@ -68,6 +68,13 @@ public abstract class Module {
 
     public abstract Symbol findClosestSymbolByAddress(long address, boolean fast);
 
+    /**
+     * @return all exported/dynamic symbols in this module, empty collection if not supported
+     */
+    public Collection<Symbol> getExportedSymbols() {
+        return Collections.emptyList();
+    }
+
     protected final Symbol findDependencySymbolByName(String name) {
         for (Module module : neededLibraries.values()) {
             Symbol symbol = module.findSymbolByName(name, true);

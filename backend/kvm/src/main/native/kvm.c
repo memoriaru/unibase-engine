@@ -24,7 +24,7 @@ typedef struct kvm {
   void **page_table;
   t_kvm_cpu cpu;
   jobject callback;
-  bool stop_request;
+  volatile bool stop_request;
   uint64_t sp;
   uint64_t cpacr;
   uint64_t tpidr;
@@ -40,6 +40,7 @@ typedef struct kvm {
 } *t_kvm;
 
 static jmethodID handleException = NULL;
+static jclass cKvmException = NULL;
 
 static int check_one_reg(uint64_t reg, int ret) {
   if(ret == 0) {
@@ -249,6 +250,9 @@ static t_kvm_cpu create_kvm_cpu(t_kvm kvm) {
 JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_setKvmCallback
   (JNIEnv *env, jclass clazz, jlong handle, jobject callback) {
   t_kvm kvm = (t_kvm) handle;
+  if(kvm->callback) {
+    (*env)->DeleteGlobalRef(env, kvm->callback);
+  }
   kvm->callback = (*env)->NewGlobalRef(env, callback);
   return 0;
 }
@@ -381,8 +385,9 @@ JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_nativeDestroy
       fprintf(stderr, "munmap failed[%s->%s:%d]: page_table=%p, ret=%d\n", __FILE__, __func__, __LINE__, kvm->page_table, ret);
     }
   }
+  int kvmFd = kvm->gKvmFd;
   free(kvm);
-  close(kvm->gKvmFd);
+  close(kvmFd);
 }
 
 /*
@@ -395,6 +400,16 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_remove_1user_1
 
   t_kvm kvm = (t_kvm) handle;
   khash_t(memory) *memory = kvm->memory;
+
+  // Pre-check: ensure all pages exist in the hash table before modifying anything
+  uint64_t vaddr;
+  for(vaddr = guest_phys_addr + vaddr_off; vaddr < guest_phys_addr + vaddr_off + memory_size; vaddr += KVM_PAGE_SIZE) {
+    khiter_t k = kh_get(memory, memory, vaddr);
+    if(k == kh_end(memory)) {
+      fprintf(stderr, "mem_unmap failed[%s->%s:%d]: vaddr=%p not found\n", __FILE__, __func__, __LINE__, (void*)vaddr);
+      return 3;
+    }
+  }
 
   if(memory_size > 0) {
     char *start_addr = (char *) (userspace_addr + vaddr_off);
@@ -419,14 +434,9 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_remove_1user_1
     return 2;
   }
 
-  uint64_t vaddr = guest_phys_addr + vaddr_off;
-  for(; vaddr < guest_phys_addr + vaddr_off + memory_size; vaddr += KVM_PAGE_SIZE) {
+  for(vaddr = guest_phys_addr + vaddr_off; vaddr < guest_phys_addr + vaddr_off + memory_size; vaddr += KVM_PAGE_SIZE) {
     uint64_t idx = vaddr >> PAGE_BITS;
     khiter_t k = kh_get(memory, memory, vaddr);
-    if(k == kh_end(memory)) {
-      fprintf(stderr, "mem_unmap failed[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
-      return 3;
-    }
     if(kvm->page_table && idx < kvm->num_page_table_entries) {
       kvm->page_table[idx] = NULL;
     }
@@ -452,8 +462,9 @@ JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_set_1user_1me
   if(start_addr == NULL) {
     start_addr = (char *) mmap(NULL, memory_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if(start_addr == MAP_FAILED) {
-      fprintf(stderr, "mmap failed[%s->%s:%d]: start_addr=%p\n", __FILE__, __func__, __LINE__, start_addr);
-      abort();
+      char msg[256];
+      snprintf(msg, sizeof(msg), "mmap failed[%s->%s:%d]: memory_size=0x%llx, errno=%d, msg=%s", __FILE__, __func__, __LINE__, (unsigned long long)memory_size, errno, strerror(errno));
+      (*env)->ThrowNew(env, cKvmException, msg);
       return 0L;
     }
   }
@@ -461,8 +472,13 @@ JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_set_1user_1me
 //  printf("set_user_memory_region slot=%d, guest_phys_addr=0x%lx, memory_size=0x%lx, userspace_addr=0x%lx, addr=%p\n", slot, guest_phys_addr, memory_size, userspace_addr, start_addr);
 
   if(guest_phys_addr <= MMIO_TRAP_ADDRESS && guest_phys_addr + memory_size > MMIO_TRAP_ADDRESS) {
-    fprintf(stderr, "set_user_memory_region slot=%d, guest_phys_addr=0x%lx, memory_size=0x%lx, userspace_addr=0x%lx, addr=%p\n", slot, guest_phys_addr, memory_size, userspace_addr, start_addr);
-    abort();
+    char msg[256];
+    snprintf(msg, sizeof(msg), "set_user_memory_region MMIO conflict: slot=%d, guest_phys_addr=0x%lx, memory_size=0x%lx", slot, (unsigned long)guest_phys_addr, (unsigned long)memory_size);
+    if(userspace_addr == 0) {
+      munmap(start_addr, memory_size);
+    }
+    (*env)->ThrowNew(env, cKvmException, msg);
+    return 0L;
   }
 
   struct kvm_userspace_memory_region region = {
@@ -473,8 +489,12 @@ JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_set_1user_1me
     .userspace_addr = (uint64_t)start_addr,
   };
   if (ioctl(kvm->gKvmFd, KVM_SET_USER_MEMORY_REGION, &region) == -1) {
-    fprintf(stderr, "set_user_memory_region failed start_addr=%p, guest_phys_addr=0x%lx\n", start_addr, guest_phys_addr);
-    abort();
+    char msg[256];
+    snprintf(msg, sizeof(msg), "set_user_memory_region ioctl failed: start_addr=%p, guest_phys_addr=0x%lx, errno=%d, msg=%s", start_addr, (unsigned long)guest_phys_addr, errno, strerror(errno));
+    if(userspace_addr == 0) {
+      munmap(start_addr, memory_size);
+    }
+    (*env)->ThrowNew(env, cKvmException, msg);
     return 0L;
   }
 //  printf("set_user_memory_region slot=0x%x, guest_phys_addr=0x%llx, memory_size=0x%llx, userspace_addr=%p\n", slot, guest_phys_addr, memory_size, start_addr);
@@ -483,14 +503,18 @@ JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_set_1user_1me
     return userspace_addr;
   }
 
-  int ret;
-  uint64_t vaddr = guest_phys_addr;
-  for(; vaddr < guest_phys_addr + memory_size; vaddr += KVM_PAGE_SIZE) {
-    uint64_t idx = vaddr >> PAGE_BITS;
+  // Pre-check: ensure no page in the range is already mapped
+  uint64_t vaddr;
+  for(vaddr = guest_phys_addr; vaddr < guest_phys_addr + memory_size; vaddr += KVM_PAGE_SIZE) {
     if(kh_get(memory, memory, vaddr) != kh_end(memory)) {
-      fprintf(stderr, "set_user_memory_region failed[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
+      fprintf(stderr, "set_user_memory_region failed[%s->%s:%d]: vaddr=%p already mapped\n", __FILE__, __func__, __LINE__, (void*)vaddr);
       return 0L;
     }
+  }
+
+  int ret;
+  for(vaddr = guest_phys_addr; vaddr < guest_phys_addr + memory_size; vaddr += KVM_PAGE_SIZE) {
+    uint64_t idx = vaddr >> PAGE_BITS;
 
     void *addr = &start_addr[vaddr - guest_phys_addr];
 //    printf("set_user_memory_region vaddr=0x%llx addr=%p\n", vaddr, addr);
@@ -500,6 +524,11 @@ JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_set_1user_1me
       fprintf(stderr, "guest_phys_addr warning[%s->%s:%d]: addr=%p, page_table=%p, idx=%llu, num_page_table_entries=%zu\n", __FILE__, __func__, __LINE__, (void*)addr, kvm->page_table, idx, kvm->num_page_table_entries);
     }
     khiter_t k = kh_put(memory, memory, vaddr, &ret);
+    if(ret < 0) {
+      fprintf(stderr, "kh_put failed: vaddr=%p\n", (void*)vaddr);
+      abort();
+      return 0L;
+    }
     t_memory_page page = (t_memory_page) calloc(1, sizeof(struct memory_page));
     if(page == NULL) {
       fprintf(stderr, "calloc page failed: size=%lu\n", sizeof(struct memory_page));
@@ -680,7 +709,10 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_mem_1write
     uint64_t len = end - start;
     char *addr = get_memory_page(memory, vaddr, kvm->num_page_table_entries, kvm->page_table);
     if(addr == NULL) {
-      fprintf(stderr, "mem_write failed[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
+      char msg[256];
+      snprintf(msg, sizeof(msg), "mem_write failed[%s->%s:%d]: vaddr=%p, address=%p, size=%d", __FILE__, __func__, __LINE__, (void*)vaddr, (void*)address, size);
+      (*env)->ReleaseByteArrayElements(env, bytes, data, JNI_ABORT);
+      (*env)->ThrowNew(env, cKvmException, msg);
       return 1;
     }
     char *dest = &addr[start];
@@ -711,7 +743,10 @@ JNIEXPORT jbyteArray JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_mem_1rea
     uint64_t len = end - start;
     char *addr = get_memory_page(memory, vaddr, kvm->num_page_table_entries, kvm->page_table);
     if(addr == NULL) {
-      fprintf(stderr, "mem_read failed[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
+      char msg[256];
+      snprintf(msg, sizeof(msg), "mem_read failed[%s->%s:%d]: vaddr=%p, address=%p, size=%d", __FILE__, __func__, __LINE__, (void*)vaddr, (void*)address, size);
+      (*env)->DeleteLocalRef(env, bytes);
+      (*env)->ThrowNew(env, cKvmException, msg);
       return NULL;
     }
     jbyte *src = (jbyte *)&addr[start];
@@ -796,6 +831,12 @@ static hv_simd_fp_reg_t fgprs[] = {
  */
 JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_reg_1write
   (JNIEnv *env, jclass clazz, jlong handle, jint index, jlong value) {
+  if(index < 0 || index > 30) {
+    char msg[128];
+    snprintf(msg, sizeof(msg), "reg_write invalid index: %d", index);
+    (*env)->ThrowNew(env, cKvmException, msg);
+    return -1;
+  }
   t_kvm kvm = (t_kvm) handle;
   t_kvm_cpu cpu = kvm->cpu;
   hv_reg_t reg = gprs[index];
@@ -810,6 +851,12 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_reg_1write
  */
 JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_reg_1read
   (JNIEnv *env, jclass clazz, jlong handle, jint index) {
+  if(index < 0 || index > 30) {
+    char msg[128];
+    snprintf(msg, sizeof(msg), "reg_read invalid index: %d", index);
+    (*env)->ThrowNew(env, cKvmException, msg);
+    return -1;
+  }
   t_kvm kvm = (t_kvm) handle;
   t_kvm_cpu cpu = kvm->cpu;
   uint64_t value = 0;
@@ -939,11 +986,10 @@ JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_free(JNIEnv *e
 JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_context_1alloc(JNIEnv *env, jclass clazz, jlong handle){
   t_kvm kvm = (t_kvm) handle;
   if(kvm->is64Bit) {
-    void *ctx = malloc(sizeof(struct context64));
+    void *ctx = calloc(1, sizeof(struct context64));
     return (jlong) ctx;
   } else {
-    fprintf(stderr, "Doesn't support 32 bit\n");
-    abort();
+    (*env)->ThrowNew(env, cKvmException, "context_alloc: doesn't support 32 bit");
     return 0;
   }
 }
@@ -973,8 +1019,7 @@ JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_context_1save(
         }
 
     }else{
-        fprintf(stderr, "Doesn't support 32 bit\n");
-        abort();
+        (*env)->ThrowNew(env, cKvmException, "context_save: doesn't support 32 bit");
         return;
     }
 }
@@ -1003,14 +1048,56 @@ JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_context_1resto
             HYP_ASSERT_SUCCESS(hv_vcpu_set_simd_fp_reg(kvm->cpu, fgprs[i], ctx->fp_registers[i]));
         }
     }else{
-        fprintf(stderr, "Doesn't support 32 bit\n");
-        abort();
+        (*env)->ThrowNew(env, cKvmException, "context_restore: doesn't support 32 bit");
         return;
     }
 }
 
 
 
+
+/*
+ * Class:     com_github_unidbg_arm_backend_kvm_Kvm
+ * Method:    mem_allocated_size
+ * Signature: (J)J
+ */
+JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_mem_1allocated_1size
+  (JNIEnv *env, jclass clazz, jlong handle) {
+  t_kvm kvm = (t_kvm) handle;
+  khash_t(memory) *memory = kvm->memory;
+  return (jlong)(kh_size(memory) * KVM_PAGE_SIZE);
+}
+
+/*
+ * Class:     com_github_unidbg_arm_backend_kvm_Kvm
+ * Method:    mem_resident_size
+ * Signature: (J)J
+ */
+JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_kvm_Kvm_mem_1resident_1size
+  (JNIEnv *env, jclass clazz, jlong handle) {
+  t_kvm kvm = (t_kvm) handle;
+  khash_t(memory) *memory = kvm->memory;
+  long sys_page_size = sysconf(_SC_PAGESIZE);
+  size_t pages_per_kvm = KVM_PAGE_SIZE / sys_page_size;
+  if(pages_per_kvm == 0) pages_per_kvm = 1;
+  uint64_t resident = 0;
+  unsigned char vec[16];
+  khint_t k;
+  for (k = kh_begin(memory); k < kh_end(memory); k++) {
+    if(kh_exist(memory, k)) {
+      t_memory_page page = kh_value(memory, k);
+      if(mincore(page->addr, KVM_PAGE_SIZE, vec) == 0) {
+        size_t i;
+        for(i = 0; i < pages_per_kvm; i++) {
+          if(vec[i] & 1) {
+            resident += sys_page_size;
+          }
+        }
+      }
+    }
+  }
+  return (jlong) resident;
+}
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
   JNIEnv *env;
@@ -1022,6 +1109,13 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     return JNI_ERR;
   }
   handleException = (*env)->GetMethodID(env, cKvmCallback, "handleException", "(JJJJJ)Z");
+
+  jclass localKvmException = (*env)->FindClass(env, "com/github/unidbg/arm/backend/kvm/KvmException");
+  if ((*env)->ExceptionCheck(env)) {
+    return JNI_ERR;
+  }
+  cKvmException = (jclass) (*env)->NewGlobalRef(env, localKvmException);
+  (*env)->DeleteLocalRef(env, localKvmException);
 
   return JNI_VERSION_1_6;
 }

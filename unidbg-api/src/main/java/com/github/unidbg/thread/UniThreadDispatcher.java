@@ -70,7 +70,7 @@ public class UniThreadDispatcher implements ThreadDispatcher {
             if (signalTask != null) {
                 task.addSignalTask(signalTask);
                 if (log.isTraceEnabled()) {
-                    emulator.attach().debug();
+                    emulator.attach().debug("Signal dispatched: sig=" + sig);
                 }
             } else {
                 sigPendingSet.addSigNumber(sig);

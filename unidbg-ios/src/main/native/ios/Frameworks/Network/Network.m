@@ -1,5 +1,9 @@
 #import "Network.h"
 
+nw_path_monitor_t nw_path_monitor_create() {
+    return nil;
+}
+
 nw_path_monitor_t nw_path_monitor_create_with_type(nw_interface_type_t required_interface_type) {
     return nil;
 }

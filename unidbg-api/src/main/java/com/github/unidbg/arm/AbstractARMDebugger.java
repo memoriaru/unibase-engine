@@ -2,28 +2,16 @@ package com.github.unidbg.arm;
 
 import capstone.api.Instruction;
 import capstone.api.RegsAccess;
-import com.github.unidbg.AssemblyCodeDumper;
-import com.github.unidbg.Emulator;
-import com.github.unidbg.Family;
-import com.github.unidbg.Module;
-import com.github.unidbg.Symbol;
-import com.github.unidbg.TraceMemoryHook;
-import com.github.unidbg.Utils;
-import com.github.unidbg.arm.backend.Backend;
-import com.github.unidbg.arm.backend.BlockHook;
-import com.github.unidbg.arm.backend.ReadHook;
-import com.github.unidbg.arm.backend.UnHook;
-import com.github.unidbg.arm.backend.WriteHook;
-import com.github.unidbg.debugger.BreakPoint;
-import com.github.unidbg.debugger.BreakPointCallback;
-import com.github.unidbg.debugger.DebugListener;
-import com.github.unidbg.debugger.DebugRunnable;
-import com.github.unidbg.debugger.Debugger;
-import com.github.unidbg.debugger.FunctionCallListener;
+import com.alibaba.fastjson.JSONObject;
+import com.github.unidbg.*;
+import com.github.unidbg.arm.backend.*;
+import com.github.unidbg.debugger.*;
+import com.github.unidbg.mcp.McpServer;
 import com.github.unidbg.memory.MemRegion;
 import com.github.unidbg.memory.Memory;
 import com.github.unidbg.memory.MemoryMap;
 import com.github.unidbg.pointer.UnidbgPointer;
+import com.github.unidbg.thread.RunnableTask;
 import com.github.unidbg.thread.Task;
 import com.github.unidbg.unix.struct.StdString;
 import com.github.unidbg.unwind.Unwinder;
@@ -43,28 +31,13 @@ import unicorn.Arm64Const;
 import unicorn.ArmConst;
 import unicorn.UnicornConst;
 
-import java.io.BufferedOutputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.PrintStream;
-import java.math.BigInteger;
+import java.io.*;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Date;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -74,7 +47,14 @@ public abstract class AbstractARMDebugger implements Debugger {
 
     private final Map<Long, BreakPoint> breakMap = new LinkedHashMap<>();
 
+    @Override
+    public Map<Long, BreakPoint> getBreakPoints() {
+        return breakMap;
+    }
+
     protected final Emulator<?> emulator;
+    protected McpServer mcpServer;
+    protected volatile boolean scannerNeedsRefresh;
 
     protected AbstractARMDebugger(Emulator<?> emulator) {
         this.emulator = emulator;
@@ -155,6 +135,122 @@ public abstract class AbstractARMDebugger implements Debugger {
 
     protected abstract Keystone createKeystone(boolean isThumb);
 
+    protected abstract int resolveRegister(String command, String[] nameOut);
+
+    protected abstract int resolveWriteRegister(String command);
+
+    protected abstract void showWriteRegs(int reg);
+
+    protected abstract void showWriteHelp();
+
+    final boolean handleWriteCommand(Backend backend, String line) {
+        if (!line.startsWith("w") || "where".equals(line)) {
+            return false;
+        }
+        String command;
+        String[] tokens = line.split("\\s+");
+        if (tokens.length < 2) {
+            showWriteHelp();
+            return true;
+        }
+        long value;
+        try {
+            command = tokens[0];
+            String str = tokens[1];
+            value = Utils.parseNumber(str);
+        } catch (NumberFormatException e) {
+            e.printStackTrace(System.err);
+            return true;
+        }
+
+        int reg = resolveWriteRegister(command);
+        if (reg != -1) {
+            backend.reg_write(reg, value);
+            showWriteRegs(reg);
+            return true;
+        }
+
+        if (command.startsWith("wb0x") || command.startsWith("ws0x") || command.startsWith("wi0x") || command.startsWith("wl0x")) {
+            String hex = command.substring(4).trim();
+            if (hex.endsWith("L")) {
+                hex = hex.substring(0, hex.length() - 1);
+            }
+            long addr = Long.parseLong(hex, 16);
+            Pointer pointer = UnidbgPointer.pointer(emulator, addr);
+            if (pointer != null) {
+                if (command.startsWith("wb")) {
+                    pointer.setByte(0, (byte) value);
+                } else if (command.startsWith("ws")) {
+                    pointer.setShort(0, (short) value);
+                } else if (command.startsWith("wi")) {
+                    pointer.setInt(0, (int) value);
+                } else if (command.startsWith("wl")) {
+                    pointer.setLong(0, value);
+                }
+                dumpMemory(pointer, 16, pointer.toString(), null);
+            } else {
+                System.out.println(addr + " is null");
+            }
+            return true;
+        }
+        return false;
+    }
+
+    final boolean handleMemoryCommand(String line) {
+        if (!line.startsWith("m")) {
+            return false;
+        }
+        String command = line;
+        String[] tokens = line.split("\\s+");
+        int length = 0x70;
+        try {
+            if (tokens.length >= 2) {
+                command = tokens[0];
+                String str = tokens[1];
+                length = (int) Utils.parseNumber(str);
+            }
+        } catch(NumberFormatException ignored) {}
+        StringType stringType = null;
+        if (command.endsWith("objc")) {
+            stringType = StringType.objc_object;
+            command = command.substring(0, command.length() - 4);
+        } else if (command.endsWith("std")) {
+            stringType = StringType.std_string;
+            command = command.substring(0, command.length() - 3);
+        } else if (command.endsWith("s")) {
+            stringType = StringType.nullTerminated;
+            command = command.substring(0, command.length() - 1);
+        }
+
+        if (command.startsWith("m0x")) {
+            String hex = command.substring(3).trim();
+            if (hex.endsWith("L")) {
+                hex = hex.substring(0, hex.length() - 1);
+            }
+            long addr = Long.parseLong(hex, 16);
+            Pointer pointer = UnidbgPointer.pointer(emulator, addr);
+            if (pointer != null) {
+                dumpMemory(pointer, length, pointer.toString(), stringType);
+            } else {
+                System.out.println(addr + " is null");
+            }
+            return true;
+        }
+
+        String[] nameOut = new String[1];
+        int reg = resolveRegister(command, nameOut);
+        if (reg != -1) {
+            Pointer pointer = UnidbgPointer.register(emulator, reg);
+            if (pointer != null) {
+                dumpMemory(pointer, length, nameOut[0] + "=" + pointer, stringType);
+            } else {
+                System.out.println(nameOut[0] + " is null");
+            }
+            return true;
+        }
+        return false;
+    }
+
     public final boolean removeBreakPoint(long address) {
         address &= (~1);
 
@@ -185,13 +281,16 @@ public abstract class AbstractARMDebugger implements Debugger {
         }
         try {
             if (listener == null || listener.canDebug(emulator, new CodeHistory(address, size, ARM.isThumb(backend)))) {
+                notifyBreakpointHit(address);
                 cancelTrace();
                 debugging = true;
+                if (mcpServer != null) mcpServer.setDebugIdle(true);
                 loop(emulator, address, size, null);
             }
         } catch (Exception e) {
             log.warn("process loop failed", e);
         } finally {
+            if (mcpServer != null) mcpServer.setDebugIdle(false);
             debugging = false;
         }
     }
@@ -265,7 +364,7 @@ public abstract class AbstractARMDebugger implements Debugger {
     }
 
     @Override
-    public void debug() {
+    public void debug(String reason) {
         Backend backend = emulator.getBackend();
         long address;
         if (emulator.is32Bit()) {
@@ -273,13 +372,16 @@ public abstract class AbstractARMDebugger implements Debugger {
         } else {
             address = backend.reg_read(Arm64Const.UC_ARM64_REG_PC).longValue();
         }
+        notifyBreakpointHit(address, reason);
         try {
             cancelTrace();
             debugging = true;
+            if (mcpServer != null) mcpServer.setDebugIdle(true);
             loop(emulator, address, 4, null);
         } catch (Exception e) {
             log.warn("debug failed", e);
         } finally {
+            if (mcpServer != null) mcpServer.setDebugIdle(false);
             debugging = false;
         }
     }
@@ -293,15 +395,23 @@ public abstract class AbstractARMDebugger implements Debugger {
     protected abstract void loop(Emulator<?> emulator, long address, int size, DebugRunnable<?> runnable) throws Exception;
 
     protected boolean callbackRunning;
+    private volatile DebugRunnable<?> currentRunnable;
+
+    @Override
+    public boolean hasRunnable() {
+        return currentRunnable != null;
+    }
 
     @Override
     public <T> T run(DebugRunnable<T> runnable) throws Exception {
         if (runnable == null) {
             throw new NullPointerException();
         }
+        currentRunnable = runnable;
         T ret;
         try {
             callbackRunning = true;
+            if (mcpServer != null) mcpServer.setDebugIdle(false);
             ret = runnable.runWithArgs(null);
         } finally {
             callbackRunning = false;
@@ -309,8 +419,10 @@ public abstract class AbstractARMDebugger implements Debugger {
         try {
             cancelTrace();
             debugging = true;
+            if (mcpServer != null) mcpServer.setDebugIdle(true);
             loop(emulator, -1, 0, runnable);
         } finally {
+            if (mcpServer != null) mcpServer.setDebugIdle(false);
             debugging = false;
         }
         return ret;
@@ -318,7 +430,8 @@ public abstract class AbstractARMDebugger implements Debugger {
 
     protected enum StringType {
         nullTerminated,
-        std_string
+        std_string,
+        objc_object
     }
 
     final void dumpMemory(Pointer pointer, int _length, String label, StringType stringType) {
@@ -329,13 +442,7 @@ public abstract class AbstractARMDebugger implements Debugger {
                 boolean foundTerminated = false;
                 while (true) {
                     byte[] data = pointer.getByteArray(addr, 0x10);
-                    int length = data.length;
-                    for (int i = 0; i < data.length; i++) {
-                        if (data[i] == 0) {
-                            length = i;
-                            break;
-                        }
-                    }
+                    int length = Utils.indexOfNullTerminator(data);
                     baos.write(data, 0, length);
                     addr += length;
 
@@ -359,6 +466,20 @@ public abstract class AbstractARMDebugger implements Debugger {
                 long size = string.getDataSize();
                 byte[] data = string.getData(emulator);
                 Inspector.inspect(data, size >= 1024 ? (label + ", hex=" + Hex.encodeHexString(data) + ", std=" + new String(data, StandardCharsets.UTF_8)) : label);
+            } else if (stringType == StringType.objc_object) {
+                long addr = ((UnidbgPointer) pointer).peer;
+                try {
+                    String className = emulator.getObjcClassName(addr);
+                    if (className != null) {
+                        System.out.println(label + " -> ObjC class: " + className);
+                    } else {
+                        System.out.println(label + " -> ObjC class name not resolved");
+                    }
+                } catch (UnsupportedOperationException e) {
+                    System.out.println(label + " -> " + e.getMessage());
+                } catch (Exception e) {
+                    System.out.println(label + " -> failed to read ObjC class: " + e);
+                }
             } else {
                 throw new UnsupportedOperationException("stringType=" + stringType);
             }
@@ -376,15 +497,7 @@ public abstract class AbstractARMDebugger implements Debugger {
                 long value = buffer.getLong();
                 sb.append(", value=0x").append(Long.toHexString(value));
             } else if (_length == 16) {
-                byte[] tmp = Arrays.copyOf(data, 16);
-                for (int i = 0; i < 8; i++) {
-                    byte b = tmp[i];
-                    tmp[i] = tmp[15 - i];
-                    tmp[15 - i] = b;
-                }
-                byte[] bytes = new byte[tmp.length + 1];
-                System.arraycopy(tmp, 0, bytes, 1, tmp.length); // makePositive
-                sb.append(", value=0x").append(new BigInteger(bytes).toString(16));
+                sb.append(", value=0x").append(ARM.newBigInteger(Arrays.copyOf(data, 0x10)).toString(16));
             }
             if (data.length >= 1024) {
                 sb.append(", hex=").append(Hex.encodeHexString(data));
@@ -451,18 +564,172 @@ public abstract class AbstractARMDebugger implements Debugger {
     private TraceMemoryHook traceWrite;
     private PrintStream traceWriteRedirectStream;
 
-    final boolean handleCommon(Backend backend, String line, long address, int size, long nextAddress, DebugRunnable<?> runnable) throws Exception {
-        if ("exit".equals(line) || "quit".equals(line) || "q".equals(line)) { // continue
-            return true;
+    private void setupTraceMemory(Backend backend, String line, boolean isRead, int traceSize) throws IOException {
+        String type = isRead ? "Read" : "Write";
+        String typeLower = isRead ? "read" : "write";
+        Pattern pattern = Pattern.compile("trace" + type + "\\s+(\\w+)\\s+(\\w+)");
+        Matcher matcher = pattern.matcher(line);
+        TraceMemoryHook existingHook = isRead ? traceRead : traceWrite;
+        if (existingHook != null) {
+            existingHook.detach();
         }
-        if ("gc".equals(line)) {
-            System.out.println("Run System.gc();");
-            System.gc();
+        TraceMemoryHook hook = new TraceMemoryHook(isRead);
+        long begin, end;
+        if (matcher.find()) {
+            begin = Utils.parseNumber(matcher.group(1));
+            end = Utils.parseNumber(matcher.group(2));
+            if (begin > end && end > 0 && end <= traceSize) {
+                end += begin;
+            }
+        } else {
+            begin = 1;
+            end = 0;
+        }
+        PrintStream redirectStream = null;
+        if (begin >= end) {
+            File traceFile = new File("target/trace" + type + ".txt");
+            if (!traceFile.exists() && !traceFile.createNewFile()) {
+                throw new IllegalStateException("createNewFile: " + traceFile);
+            }
+            redirectStream = new PrintStream(new BufferedOutputStream(Files.newOutputStream(traceFile.toPath())), true);
+            redirectStream.printf("[%s]Start trace%s%n", new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()), type);
+            hook.setRedirect(redirectStream);
+            System.out.printf("Set trace all memory %s success with trace file: %s.%n", typeLower, traceFile.getAbsolutePath());
+        } else {
+            boolean needTraceFile = end - begin > traceSize;
+            if (needTraceFile) {
+                File traceFile = new File(String.format("target/trace%s_0x%x-0x%x.txt", type, begin, end));
+                if (!traceFile.exists() && !traceFile.createNewFile()) {
+                    throw new IllegalStateException("createNewFile: " + traceFile);
+                }
+                redirectStream = new PrintStream(new BufferedOutputStream(Files.newOutputStream(traceFile.toPath())), true);
+                redirectStream.printf("[%s]Start trace%s: 0x%x-0x%x%n", new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()), type, begin, end);
+                hook.setRedirect(redirectStream);
+                System.out.printf("Set trace 0x%x->0x%x memory %s success with trace file: %s.%n", begin, end, typeLower, traceFile.getAbsolutePath());
+            } else {
+                System.out.printf("Set trace 0x%x->0x%x memory %s success.%n", begin, end, typeLower);
+            }
+        }
+        if (isRead) {
+            traceRead = hook;
+            traceReadRedirectStream = redirectStream;
+            backend.hook_add_new((ReadHook) hook, begin, end, emulator);
+        } else {
+            traceWrite = hook;
+            traceWriteRedirectStream = redirectStream;
+            backend.hook_add_new((WriteHook) hook, begin, end, emulator);
+        }
+    }
+
+    final boolean handleCommon(Backend backend, String line, long address, int size, long nextAddress, DebugRunnable<?> runnable) throws Exception {
+        if ("help".equals(line)) {
+            showHelp(address);
             return false;
         }
-        if ("threads".equals(line)) {
-            for (Task task : emulator.getThreadDispatcher().getTaskList()) {
-                System.out.println(task.getId() + ": " + task);
+        if (handleMemoryCommand(line)) {
+            return false;
+        }
+        if ("where".equals(line)) {
+            new Exception("here").printStackTrace(System.out);
+            return false;
+        }
+        if (line.startsWith("wx0x")) {
+            String[] tokens = line.split("\\s+");
+            String hex = tokens[0].substring(4).trim();
+            if (hex.endsWith("L")) {
+                hex = hex.substring(0, hex.length() - 1);
+            }
+            long addr = Long.parseLong(hex, 16);
+            Pointer pointer = UnidbgPointer.pointer(emulator, addr);
+            if (pointer != null && tokens.length > 1) {
+                byte[] data = Hex.decodeHex(tokens[1].toCharArray());
+                pointer.write(0, data, 0, data.length);
+                dumpMemory(pointer, data.length, pointer.toString(), null);
+            } else {
+                System.out.println(addr + " is null");
+            }
+            return false;
+        }
+        if (emulator.isRunning() && "bt".equals(line)) {
+            try {
+                emulator.getUnwinder().unwind();
+            } catch (Throwable e) {
+                e.printStackTrace(System.err);
+            }
+            return false;
+        }
+        if (handleBreakpointCommand(line, address)) {
+            return false;
+        }
+        switch (line) {
+            case "blr": {
+                long addr = emulator.is32Bit()
+                        ? backend.reg_read(ArmConst.UC_ARM_REG_LR).intValue() & 0xffffffffL
+                        : backend.reg_read(Arm64Const.UC_ARM64_REG_LR).longValue();
+                addAndPrintBreakPoint(addr);
+                return false;
+            }
+            case "r": {
+                long addr = emulator.is32Bit()
+                        ? backend.reg_read(ArmConst.UC_ARM_REG_PC).intValue() & 0xffffffffL
+                        : backend.reg_read(Arm64Const.UC_ARM64_REG_PC).longValue();
+                if (removeBreakPoint(addr)) {
+                    Module module = findModuleByAddress(emulator, addr);
+                    System.out.println("Remove breakpoint: 0x" + Long.toHexString(addr) + (module == null ? "" : (" in " + module.name + " [0x" + Long.toHexString(addr - module.base) + "]")));
+                }
+                return false;
+            }
+            case "b": {
+                long addr = emulator.is32Bit()
+                        ? backend.reg_read(ArmConst.UC_ARM_REG_PC).intValue() & 0xffffffffL
+                        : backend.reg_read(Arm64Const.UC_ARM64_REG_PC).longValue();
+                addAndPrintBreakPoint(addr);
+                return false;
+            }
+        }
+        if (line.startsWith("run") && runnable != null) {
+            String arg = line.substring(3).trim();
+            try {
+                callbackRunning = true;
+                if (mcpServer != null) mcpServer.setDebugIdle(false);
+                if (!arg.isEmpty()) {
+                    String[] args = arg.split("\\s+");
+                    runnable.runWithArgs(args);
+                } else {
+                    runnable.runWithArgs(null);
+                }
+                notifyExecutionCompleted();
+            } catch (Exception e) {
+                log.warn("runWithArgs failed: arg={}", arg, e);
+                notifyExecutionError(e);
+            } finally {
+                callbackRunning = false;
+                if (mcpServer != null) mcpServer.setDebugIdle(true);
+            }
+            return false;
+        }
+        switch (line) {
+            case "exit":
+            case "quit":
+            case "q":  // continue
+                return true;
+            case "gc":
+                System.out.println("Run System.gc();");
+                System.gc();
+                return false;
+            case "threads":
+                for (Task task : emulator.getThreadDispatcher().getTaskList()) {
+                    System.out.println(task.getId() + ": " + task);
+                }
+                return false;
+        }
+        if (line.startsWith("mcp")) {
+            startMcpServer(line);
+            return false;
+        }
+        if ("_mcp".equals(line)) {
+            if (mcpServer != null) {
+                mcpServer.executePendingOperation();
             }
             return false;
         }
@@ -474,11 +741,14 @@ public abstract class AbstractARMDebugger implements Debugger {
             if ("c".equals(line)) {
                 try {
                     callbackRunning = true;
+                    if (mcpServer != null) mcpServer.setDebugIdle(false);
                     runnable.runWithArgs(null);
                     cancelTrace();
+                    notifyExecutionCompleted();
                     return false;
                 } finally {
                     callbackRunning = false;
+                    if (mcpServer != null) mcpServer.setDebugIdle(true);
                 }
             }
         }
@@ -556,114 +826,17 @@ public abstract class AbstractARMDebugger implements Debugger {
                 return false;
             }
         }
-        final int traceSize = 0x10000;
+        int traceSize = 0x10000;
         if (line.startsWith("traceRead")) { // start trace memory read
-            Pattern pattern = Pattern.compile("traceRead\\s+(\\w+)\\s+(\\w+)");
-            Matcher matcher = pattern.matcher(line);
-            if (traceRead != null) {
-                traceRead.detach();
-            }
-            traceRead = new TraceMemoryHook(true);
-            long begin, end;
-            if (matcher.find()) {
-                begin = Utils.parseNumber(matcher.group(1));
-                end = Utils.parseNumber(matcher.group(2));
-                if (begin > end && end > 0 && end <= traceSize) {
-                    end += begin;
-                }
-                if (begin >= end) {
-                    File traceFile = new File("target/traceRead.txt");
-                    if (!traceFile.exists() && !traceFile.createNewFile()) {
-                        throw new IllegalStateException("createNewFile: " + traceFile);
-                    }
-                    traceReadRedirectStream = new PrintStream(new BufferedOutputStream(Files.newOutputStream(traceFile.toPath())), true);
-                    traceReadRedirectStream.printf("[%s]Start traceRead%n", new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()));
-                    traceRead.setRedirect(traceReadRedirectStream);
-                    System.out.printf("Set trace all memory read success with trace file: %s.%n", traceFile);
-                } else {
-                    boolean needTraceFile = end - begin > traceSize;
-                    if (needTraceFile) {
-                        File traceFile = new File(String.format("target/traceRead_0x%x-0x%x.txt", begin, end));
-                        if (!traceFile.exists() && !traceFile.createNewFile()) {
-                            throw new IllegalStateException("createNewFile: " + traceFile);
-                        }
-                        traceReadRedirectStream = new PrintStream(new BufferedOutputStream(Files.newOutputStream(traceFile.toPath())), true);
-                        traceReadRedirectStream.printf("[%s]Start traceRead: 0x%x-0x%x%n", new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()), begin, end);
-                        traceRead.setRedirect(traceReadRedirectStream);
-                        System.out.printf("Set trace 0x%x->0x%x memory read success with trace file: %s.%n", begin, end, traceFile.getAbsolutePath());
-                    } else {
-                        System.out.printf("Set trace 0x%x->0x%x memory read success.%n", begin, end);
-                    }
-                }
-            } else {
-                begin = 1;
-                end = 0;
-
-                File traceFile = new File("target/traceRead.txt");
-                if (!traceFile.exists() && !traceFile.createNewFile()) {
-                    throw new IllegalStateException("createNewFile: " + traceFile);
-                }
-                traceReadRedirectStream = new PrintStream(new BufferedOutputStream(Files.newOutputStream(traceFile.toPath())), true);
-                traceReadRedirectStream.printf("[%s]Start traceRead%n", new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()));
-                traceRead.setRedirect(traceReadRedirectStream);
-                System.out.printf("Set trace all memory read success with trace file: %s.%n", traceFile.getAbsolutePath());
-            }
-            backend.hook_add_new((ReadHook) traceRead, begin, end, emulator);
+            setupTraceMemory(backend, line, true, traceSize);
             return false;
         }
         if (line.startsWith("traceWrite")) { // start trace memory write
-            Pattern pattern = Pattern.compile("traceWrite\\s+(\\w+)\\s+(\\w+)");
-            Matcher matcher = pattern.matcher(line);
-            if (traceWrite != null) {
-                traceWrite.detach();
-            }
-            traceWrite = new TraceMemoryHook(false);
-            long begin, end;
-            if (matcher.find()) {
-                begin = Utils.parseNumber(matcher.group(1));
-                end = Utils.parseNumber(matcher.group(2));
-                if (begin > end && end > 0 && end <= traceSize) {
-                    end += begin;
-                }
-                if (begin >= end) {
-                    File traceFile = new File("target/traceWrite.txt");
-                    if (!traceFile.exists() && !traceFile.createNewFile()) {
-                        throw new IllegalStateException("createNewFile: " + traceFile);
-                    }
-                    traceWriteRedirectStream = new PrintStream(new BufferedOutputStream(Files.newOutputStream(traceFile.toPath())), true);
-                    traceWriteRedirectStream.printf("[%s]Start traceWrite%n", new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()));
-                    traceWrite.setRedirect(traceWriteRedirectStream);
-                    System.out.printf("Set trace all memory write success with trace file: %s.%n", traceFile);
-                } else {
-                    boolean needTraceFile = end - begin > traceSize;
-                    if (needTraceFile) {
-                        File traceFile = new File(String.format("target/traceWrite_0x%x-0x%x.txt", begin, end));
-                        if (!traceFile.exists() && !traceFile.createNewFile()) {
-                            throw new IllegalStateException("createNewFile: " + traceFile);
-                        }
-                        traceWriteRedirectStream = new PrintStream(new BufferedOutputStream(Files.newOutputStream(traceFile.toPath())), true);
-                        traceWriteRedirectStream.printf("[%s]Start traceWrite: 0x%x-0x%x%n", new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()), begin, end);
-                        traceWrite.setRedirect(traceWriteRedirectStream);
-                        System.out.printf("Set trace 0x%x->0x%x memory write success with trace file: %s.%n", begin, end, traceFile.getAbsolutePath());
-                    } else {
-                        System.out.printf("Set trace 0x%x->0x%x memory write success.%n", begin, end);
-                    }
-                }
-            } else {
-                begin = 1;
-                end = 0;
-
-                File traceFile = new File("target/traceWrite.txt");
-                if (!traceFile.exists() && !traceFile.createNewFile()) {
-                    throw new IllegalStateException("createNewFile: " + traceFile);
-                }
-                traceWriteRedirectStream = new PrintStream(new BufferedOutputStream(Files.newOutputStream(traceFile.toPath())), true);
-                traceWriteRedirectStream.printf("[%s]Start traceWrite%n", new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()));
-                traceWrite.setRedirect(traceWriteRedirectStream);
-                System.out.printf("Set trace all memory write success with trace file: %s.%n", traceFile.getAbsolutePath());
-            }
-            backend.hook_add_new((WriteHook) traceWrite, begin, end, emulator);
+            setupTraceMemory(backend, line, false, traceSize);
             return false;
+        }
+        if ("traceAll".equals(line)) {
+            line = "trace 1 0";
         }
         if (line.startsWith("trace")) { // start trace instructions
             Memory memory = emulator.getMemory();
@@ -919,7 +1092,103 @@ public abstract class AbstractARMDebugger implements Debugger {
     protected void dumpClass(String className) {
     }
 
-    void showHelp(long address) {}
+    final boolean handleBreakpointCommand(String line, long currentAddress) {
+        if (!line.startsWith("b0x")) {
+            return false;
+        }
+        try {
+            if (line.endsWith("L")) {
+                line = line.substring(0, line.length() - 1);
+            }
+            long addr = Long.parseLong(line.substring(3), 16) & (emulator.is32Bit() ? 0xffffffffL : 0xfffffffffffffffeL);
+            Module module = null;
+            if (addr < Memory.MMAP_BASE && (module = findModuleByAddress(emulator, currentAddress)) != null) {
+                addr += module.base;
+            }
+            addBreakPoint(addr);
+            if (module == null) {
+                module = findModuleByAddress(emulator, addr);
+            }
+            System.out.println("Add breakpoint: 0x" + Long.toHexString(addr) + (module == null ? "" : (" in " + module.name + " [0x" + Long.toHexString(addr - module.base) + "]")));
+            return true;
+        } catch (NumberFormatException ignored) {
+        }
+        return false;
+    }
+
+    private void addAndPrintBreakPoint(long addr) {
+        addBreakPoint(addr);
+        Module module = findModuleByAddress(emulator, addr);
+        System.out.println("Add breakpoint: 0x" + Long.toHexString(addr) + (module == null ? "" : (" in " + module.name + " [0x" + Long.toHexString(addr - module.base) + "]")));
+    }
+
+    void showHelp(long address) {
+        System.out.println("c: continue");
+        System.out.println("n: step over");
+        if (emulator.isRunning()) {
+            System.out.println("bt: back trace");
+        }
+        System.out.println();
+        System.out.println("st hex: search stack");
+        System.out.println("shw hex: search writable heap");
+        System.out.println("shr hex: search readable heap");
+        System.out.println("shx hex: search executable heap");
+        System.out.println();
+        System.out.println("nb: break at next block");
+        System.out.println("s|si: step into");
+        System.out.println("s[decimal]: execute specified amount instruction");
+    }
+
+    final void showCommonHelp(long address) {
+        System.out.println("wx(address) <hex>: write bytes to memory at specified address, address must start with 0x");
+        System.out.println();
+        System.out.println("b(address): add temporarily breakpoint, address must start with 0x, can be module offset");
+        System.out.println("b: add breakpoint of register PC");
+        System.out.println("r: remove breakpoint of register PC");
+        System.out.println("blr: add temporarily breakpoint of register LR");
+        System.out.println();
+        System.out.println("p (assembly): patch assembly at PC address");
+        System.out.println("where: show java stack trace");
+        System.out.println();
+        System.out.println("trace [begin end]: Set trace instructions");
+        System.out.println("traceRead [begin end]: Set trace memory read");
+        System.out.println("traceWrite [begin end]: Set trace memory write");
+        System.out.println("vm: view loaded modules");
+        System.out.println("vbs: view breakpoints");
+        System.out.println("d|dis: show disassemble");
+        System.out.println("d(0x): show disassemble at specify address");
+        System.out.println("stop: stop emulation");
+        System.out.println("run [arg]: run test");
+        System.out.println("gc: Run System.gc()");
+        System.out.println("threads: show thread list");
+        System.out.println("mcp [port]: start MCP server for AI tool integration (default port 9239)");
+
+        if (emulator.getFamily() == Family.iOS && !emulator.isRunning()) {
+            System.out.println("dump [class name]: dump objc class");
+            System.out.println("search [keywords]: search objc classes");
+            if (emulator.is64Bit()) {
+                System.out.println("gpb [class name]: dump GPB protobuf msg def");
+            }
+        }
+
+        Module module = emulator.getMemory().findModuleByAddress(address);
+        if (module != null) {
+            if (emulator.is32Bit()) {
+                System.out.printf("cc size: convert asm from 0x%x - 0x%x + size bytes to c function%n", address, address);
+            } else {
+                System.out.printf("cc (size): convert asm from (0x%x) to (0x%x + size) bytes to c function%n", address, address);
+            }
+        }
+    }
+
+    private void appendSymbolInfo(StringBuilder sb, Emulator<?> emulator, long address) {
+        Module module = findModuleByAddress(emulator, address);
+        Symbol symbol = module == null ? null : module.findClosestSymbolByAddress(address, false);
+        if (symbol != null && address - symbol.getAddress() <= Unwinder.SYMBOL_SIZE) {
+            GccDemangler demangler = DemanglerFactory.createDemangler();
+            sb.append(demangler.demangle(symbol.getName())).append(" + 0x").append(Long.toHexString(address - (symbol.getAddress() & ~1))).append("\n");
+        }
+    }
 
     /**
      * @return next address
@@ -929,14 +1198,7 @@ public abstract class AbstractARMDebugger implements Debugger {
         boolean on = false;
         int maxLength = emulator.getMemory().getMaxLengthLibraryName().length();
         StringBuilder sb = new StringBuilder();
-        {
-            Module module = findModuleByAddress(emulator, address);
-            Symbol symbol = module == null ? null : module.findClosestSymbolByAddress(address, false);
-            if (symbol != null && address - symbol.getAddress() <= Unwinder.SYMBOL_SIZE) {
-                GccDemangler demangler = DemanglerFactory.createDemangler();
-                sb.append(demangler.demangle(symbol.getName())).append(" + 0x").append(Long.toHexString(address - (symbol.getAddress() & ~1))).append("\n");
-            }
-        }
+        appendSymbolInfo(sb, emulator, address);
         long nextAddr = address - size;
         for (CodeHistory history : Arrays.asList(
                 new CodeHistory(address - size, size, thumb),
@@ -990,14 +1252,7 @@ public abstract class AbstractARMDebugger implements Debugger {
     @Override
     public final void disassembleBlock(Emulator<?> emulator, long address, boolean thumb) {
         StringBuilder sb = new StringBuilder();
-        {
-            Module module = findModuleByAddress(emulator, address);
-            Symbol symbol = module == null ? null : module.findClosestSymbolByAddress(address, false);
-            if (symbol != null && address - symbol.getAddress() <= Unwinder.SYMBOL_SIZE) {
-                GccDemangler demangler = DemanglerFactory.createDemangler();
-                sb.append(demangler.demangle(symbol.getName())).append(" + 0x").append(Long.toHexString(address - (symbol.getAddress() & ~1))).append("\n");
-            }
-        }
+        appendSymbolInfo(sb, emulator, address);
         long nextAddr = address;
         UnidbgPointer pointer = UnidbgPointer.pointer(emulator, address);
         assert pointer != null;
@@ -1066,7 +1321,146 @@ public abstract class AbstractARMDebugger implements Debugger {
     }
 
     @Override
+    public void addMcpTool(String name, String description, String... paramNames) {
+        if (mcpServer != null) {
+            mcpServer.addCustomTool(name, description, paramNames);
+        } else {
+            pendingMcpTools.add(new PendingMcpTool(name, description, paramNames));
+        }
+    }
+
+    private final List<PendingMcpTool> pendingMcpTools = new ArrayList<>();
+
+    private static class PendingMcpTool {
+        final String name, description;
+        final String[] paramNames;
+        PendingMcpTool(String name, String description, String[] paramNames) {
+            this.name = name;
+            this.description = description;
+            this.paramNames = paramNames;
+        }
+    }
+
+    private void startMcpServer(String line) {
+        if (mcpServer != null) {
+            int p = mcpServer.getPort();
+            System.out.println("MCP server already running on port " + p);
+            printMcpConfig(p, mcpServerIndex);
+            return;
+        }
+        int port = 9239;
+        String portStr = line.substring(3).trim();
+        if (!portStr.isEmpty()) {
+            try {
+                port = Integer.parseInt(portStr);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        int maxRetries = 10;
+        for (int i = 0; i < maxRetries; i++) {
+            try {
+                mcpServer = new McpServer(emulator, port);
+                for (PendingMcpTool tool : pendingMcpTools) {
+                    mcpServer.addCustomTool(tool.name, tool.description, tool.paramNames);
+                }
+                pendingMcpTools.clear();
+                mcpServer.start();
+                scannerNeedsRefresh = true;
+                mcpServer.setDebugIdle(true);
+                mcpServerIndex = i;
+                System.out.println("MCP server started on port " + port);
+                printMcpConfig(port, i);
+                return;
+            } catch (IOException e) {
+                mcpServer = null;
+                if (i < maxRetries - 1) {
+                    System.out.println("Port " + port + " is in use, trying " + (port + 1) + "...");
+                    port++;
+                } else {
+                    System.err.println("Failed to start MCP server: " + e.getMessage());
+                }
+            }
+        }
+    }
+
+    private int mcpServerIndex;
+
+    private void printMcpConfig(int port, int index) {
+        String serverName = index == 0 ? "unidbg-mcp-server" : "unidbg-mcp-server-" + index;
+        System.out.println("Add to Cursor MCP settings:");
+        System.out.println("{");
+        System.out.println("  \"mcpServers\": {");
+        System.out.println("    \"" + serverName + "\": {");
+        System.out.println("      \"type\": \"sse\",");
+        System.out.println("      \"url\": \"http://localhost:" + port + "/sse\"");
+        System.out.println("    }");
+        System.out.println("  }");
+        System.out.println("}");
+    }
+
+    private void notifyBreakpointHit(long address) {
+        notifyBreakpointHit(address, null);
+    }
+
+    private void notifyBreakpointHit(long address, String reason) {
+        if (mcpServer == null) return;
+        JSONObject data = new JSONObject(true);
+        data.put("event", "breakpoint_hit");
+        data.put("pc", "0x" + Long.toHexString(address));
+        if (reason != null) {
+            data.put("reason", reason);
+        }
+        RunnableTask runningTask = emulator.getThreadDispatcher().getRunningTask();
+        if (runningTask instanceof Task) {
+            Task task = (Task) runningTask;
+            data.put("tid", task.getId());
+            data.put("is_main_thread", task.isMainThread());
+        }
+        Module module = emulator.getMemory().findModuleByAddress(address);
+        if (module != null) {
+            data.put("module", module.name);
+            data.put("offset", "0x" + Long.toHexString(address - module.base));
+        }
+        mcpServer.queueEvent(data);
+        mcpServer.broadcastNotification("breakpoint_hit", data);
+    }
+
+    void notifyExecutionCompleted() {
+        if (mcpServer == null) return;
+        JSONObject data = new JSONObject(true);
+        data.put("event", "execution_completed");
+        mcpServer.queueEvent(data);
+        mcpServer.broadcastNotification("execution_completed", data);
+    }
+
+    private void notifyExecutionError(Exception e) {
+        if (mcpServer == null) return;
+        JSONObject data = new JSONObject(true);
+        data.put("event", "execution_error");
+        data.put("error", e.getClass().getName() + ": " + (e.getMessage() != null ? e.getMessage() : e.toString()));
+        mcpServer.queueEvent(data);
+        mcpServer.broadcastNotification("execution_error", data);
+    }
+
+    public void notifyExecutionStarted(long address) {
+        if (mcpServer == null) return;
+        Module module = emulator.getMemory().findModuleByAddress(address);
+        if (module == null) return;
+        JSONObject data = new JSONObject(true);
+        data.put("event", "execution_started");
+        data.put("pc", "0x" + Long.toHexString(address));
+        data.put("module", module.name);
+        data.put("offset", "0x" + Long.toHexString(address - module.base));
+        mcpServer.queueEvent(data);
+        mcpServer.broadcastNotification("execution_started", data);
+    }
+
+    @Override
     public void close() {
+        if (mcpServer != null) {
+            mcpServer.stop();
+            mcpServer = null;
+        }
     }
 
 }

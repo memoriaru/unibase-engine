@@ -59,29 +59,27 @@ public class FrameworkLoaderTest implements EmulatorConfigurator, DispatchAsyncC
         if (!success) {
             throw new IllegalStateException("Approov.initialize failed.");
         }
-        emulator.attach().run(new DebugRunnable<Void>() {
-            @Override
-            public Void runWithArgs(String[] args) {
-                final IClassDumper classDumper = ClassDumper.getInstance(emulator);
-                String objcClass = classDumper.dumpClass("Approov");
-                System.out.println("[" + Thread.currentThread().getName() + "]\n" + objcClass);
-                NSString sdkId = cApproov.callObjc("getSDKID").toNSString();
-                NSString deviceID = cApproov.callObjc("getDeviceID").toNSString();
-                System.out.println("sdkId=" + sdkId.getString() + ", deviceID=" + deviceID.getString());
+        emulator.attach().run((DebugRunnable<Void>) args -> {
+            final IClassDumper classDumper = ClassDumper.getInstance(emulator);
+            String objcClass = classDumper.dumpClass("Approov");
+            System.out.println("[" + Thread.currentThread().getName() + "]\n" + objcClass);
+            NSString sdkId = cApproov.callObjc("getSDKID").toNSString();
+            NSString deviceID = cApproov.callObjc("getDeviceID").toNSString();
+            System.out.println("sdkId=" + sdkId.getString() + ", deviceID=" + deviceID.getString());
 
-                hookLoader.hookObjcMsgSend(FrameworkLoaderTest.this);
-                Logger.getLogger(UniThreadDispatcher.class).setLevel(Level.TRACE);
-                Logger.getLogger("com.github.unidbg.ios.debug").setLevel(Level.DEBUG);
-                ObjcObject result = cApproov.callObjc("fetchApproovTokenAndWait:", objc.newString("api.papara.com"));
-                System.out.println("fetchApproovTokenAndWait result=" + result);
-                return null;
-            }
+            hookLoader.hookObjcMsgSend(FrameworkLoaderTest.this);
+            Logger.getLogger(UniThreadDispatcher.class).setLevel(Level.TRACE);
+            Logger.getLogger("com.github.unidbg.ios.debug").setLevel(Level.DEBUG);
+            ObjcObject result = cApproov.callObjc("fetchApproovTokenAndWait:", objc.newString("api.papara.com"));
+            System.out.println("fetchApproovTokenAndWait result=" + result);
+            return null;
         });
     }
 
     @Override
-    public void onMsgSend(Emulator<?> emulator, boolean systemClass, String className, String cmd, Pointer lr) {
+    public boolean onMsgSend(Emulator<?> emulator, boolean systemClass, String className, String cmd, Pointer lr) {
         System.out.println("onMsgSend [" + className + " " + cmd + "] LR=" + lr);
+        return false;
     }
 
     @Override

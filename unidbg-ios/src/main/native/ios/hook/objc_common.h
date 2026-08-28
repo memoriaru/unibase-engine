@@ -51,6 +51,9 @@ uintptr_t pre_objc_msgSend(id self, SEL _cmd, ...) {
   if(callback) {
     NSString *format = callback(systemClass, class ? class_getName(class) : NULL, sel_getName(_cmd), lr);
     if(format) {
+      if([format isEqualToString:sel_getName(_cmd)]) {
+        return 0;
+      }
       va_list args;
       va_start(args, _cmd);
       NSLogv(format, args);

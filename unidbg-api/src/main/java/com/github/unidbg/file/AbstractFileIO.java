@@ -59,7 +59,7 @@ public abstract class AbstractFileIO implements NewFileIO {
     @Override
     public int ioctl(Emulator<?> emulator, long request, long argp) {
         if (log.isTraceEnabled()) {
-            emulator.attach().debug();
+            emulator.attach().debug("Unsupported ioctl request=0x" + Long.toHexString(request) + " on " + getClass().getName());
         }
         throw new AbstractMethodError(getClass().getName() + ": request=0x" + Long.toHexString(request) + ", argp=0x" + Long.toHexString(argp));
     }

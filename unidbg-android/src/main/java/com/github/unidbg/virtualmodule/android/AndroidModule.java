@@ -15,6 +15,7 @@ import com.sun.jna.Pointer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.HashMap;
 import java.util.Map;
 
 public class AndroidModule extends VirtualModule<VM> {
@@ -43,12 +44,12 @@ public class AndroidModule extends VirtualModule<VM> {
         symbols.put("AAssetManager_open", svcMemory.registerSvc(is64Bit ? new Arm64Svc() {
             @Override
             public long handle(Emulator<?> emulator) {
-                return open(emulator, vm);
+                return open(emulator, vm, assetMap);
             }
         } : new ArmSvc() {
             @Override
             public long handle(Emulator<?> emulator) {
-                return open(emulator, vm);
+                return open(emulator, vm, assetMap);
             }
         }));
         symbols.put("AAsset_close", svcMemory.registerSvc(is64Bit ? new Arm64Svc() {
@@ -108,7 +109,13 @@ public class AndroidModule extends VirtualModule<VM> {
         return assetManager.peer;
     }
 
-    private static long open(Emulator<?> emulator, VM vm) {
+    private final Map<String, byte[]> assetMap = new HashMap<>(1);
+
+    public void addAsset(String name, byte[] bytes) {
+        assetMap.put(name, bytes);
+    }
+
+    private static long open(Emulator<?> emulator, VM vm, Map<String, byte[]> assetMap) {
         RegisterContext context = emulator.getContext();
         Pointer amgr = context.getPointerArg(0);
         String filename = context.getPointerArg(1).getString(0);
@@ -122,7 +129,7 @@ public class AndroidModule extends VirtualModule<VM> {
         final int AASSET_MODE_BUFFER = 3;
         if (mode == AASSET_MODE_STREAMING || AASSET_MODE_BUFFER == mode ||
                 mode == AASSET_MODE_UNKNOWN || mode == AASSET_MODE_RANDOM) {
-            byte[] data = vm.openAsset(filename);
+            byte[] data = assetMap.containsKey(filename) ? assetMap.get(filename) : vm.openAsset(filename);
             if (data == null) {
                 return 0L;
             }

@@ -87,7 +87,7 @@ public class ARM32SyscallHandler extends AndroidSyscallHandler {
             return;
         }
         if (intno == ARMEmulator.EXCP_UDEF) {
-            createBreaker(emulator).debug();
+            createBreaker(emulator).debug("Undefined instruction (EXCP_UDEF) at " + pc);
             return;
         }
 
@@ -773,7 +773,7 @@ public class ARM32SyscallHandler extends AndroidSyscallHandler {
         log.info("fork");
         Logger log = LoggerFactory.getLogger(AbstractEmulator.class);
         if (log.isDebugEnabled()) {
-            createBreaker(emulator).debug();
+            createBreaker(emulator).debug("fork() called");
         }
         emulator.getMemory().setErrno(UnixEmulator.ENOSYS);
         return -1;
@@ -871,7 +871,7 @@ public class ARM32SyscallHandler extends AndroidSyscallHandler {
         log.info("pthread_clone child_stack={}, thread_id={}, fn={}, arg={}, flags={}", child_stack, threadId, fn, arg, list);
         Logger log = LoggerFactory.getLogger(AbstractEmulator.class);
         if (log.isDebugEnabled()) {
-            emulator.attach().debug();
+            emulator.attach().debug("pthread_clone thread_id=" + threadId + ", fn=" + fn);
         }
         return threadId;
     }
@@ -1029,7 +1029,7 @@ public class ARM32SyscallHandler extends AndroidSyscallHandler {
         log.info("execve filename={}, args={}, env={}", filename.getString(0), args, env);
         Logger log = LoggerFactory.getLogger(AbstractEmulator.class);
         if (log.isDebugEnabled()) {
-            createBreaker(emulator).debug();
+            createBreaker(emulator).debug("execve: " + filename.getString(0));
         }
         emulator.getMemory().setErrno(UnixEmulator.EACCES);
         return -1;
@@ -1630,7 +1630,7 @@ public class ARM32SyscallHandler extends AndroidSyscallHandler {
             System.out.println("exit with code: " + status);
         }
         if (LoggerFactory.getLogger(AbstractEmulator.class).isDebugEnabled()) {
-            createBreaker(emulator).debug();
+            createBreaker(emulator).debug("exit_group status=" + status);
         }
         emulator.getBackend().emu_stop();
     }
@@ -1815,7 +1815,7 @@ public class ARM32SyscallHandler extends AndroidSyscallHandler {
             if (warning) {
                 log.warn(msg);
                 if (log.isDebugEnabled()) {
-                    emulator.attach().debug();
+                    emulator.attach().debug("mmap2 warning");
                 }
             } else {
                 log.debug(msg);

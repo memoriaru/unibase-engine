@@ -1,6 +1,5 @@
 package com.github.unidbg;
 
-import com.alibaba.fastjson.util.IOUtils;
 import com.github.unidbg.arm.ARMSvcMemory;
 import com.github.unidbg.arm.backend.Backend;
 import com.github.unidbg.arm.backend.BackendFactory;
@@ -23,12 +22,7 @@ import com.github.unidbg.memory.SvcMemory;
 import com.github.unidbg.pointer.MemoryWriteListener;
 import com.github.unidbg.pointer.UnidbgPointer;
 import com.github.unidbg.spi.Dlfcn;
-import com.github.unidbg.thread.MainTask;
-import com.github.unidbg.thread.PopContextException;
-import com.github.unidbg.thread.RunnableTask;
-import com.github.unidbg.thread.ThreadContextSwitchException;
-import com.github.unidbg.thread.ThreadDispatcher;
-import com.github.unidbg.thread.UniThreadDispatcher;
+import com.github.unidbg.thread.*;
 import com.github.unidbg.unix.UnixSyscallHandler;
 import com.github.unidbg.utils.Inspector;
 import com.sun.jna.Pointer;
@@ -38,11 +32,7 @@ import org.slf4j.LoggerFactory;
 import unicorn.Arm64Const;
 import unicorn.ArmConst;
 
-import java.io.DataOutput;
-import java.io.File;
-import java.io.IOException;
-import java.io.PrintWriter;
-import java.io.StringWriter;
+import java.io.*;
 import java.lang.management.ManagementFactory;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
@@ -335,12 +325,19 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
     }
 
     protected final Number runMainForResult(MainTask task) {
+        notifyMcpExecutionStarted(task.getAddress());
         Memory memory = getMemory();
         long spBackup = memory.getStackPoint();
         try {
             return getThreadDispatcher().runMainForResult(task);
         } finally {
             memory.setStackPoint(spBackup);
+        }
+    }
+
+    private void notifyMcpExecutionStarted(long address) {
+        if (debugger instanceof com.github.unidbg.arm.AbstractARMDebugger) {
+            ((com.github.unidbg.arm.AbstractARMDebugger) debugger).notifyExecutionStarted(address);
         }
     }
 
@@ -361,7 +358,7 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
         Thread exitHook = null;
         try {
             if (log.isDebugEnabled()) {
-                log.debug("emulate " + pointer + " started sp=" + getStackPointer());
+                log.debug("emulate {} started sp={}", pointer, getStackPointer());
             }
             start = System.currentTimeMillis();
             running = true;
@@ -370,7 +367,7 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
                     backend.emu_stop();
                     Debugger debugger = attach();
                     if (!debugger.isDebugging()) {
-                        debugger.debug();
+                        debugger.debug("Shutdown hook triggered");
                     }
                 });
                 Runtime.getRuntime().addShutdownHook(exitHook);
@@ -407,7 +404,7 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
         boolean enterDebug = log.isDebugEnabled();
         if (enterDebug || !log.isWarnEnabled()) {
             e.printStackTrace(System.out);
-            attach().debug();
+            attach().debug("Emulation exception: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getName()));
         } else {
             String msg = e.getMessage();
             if (msg == null) {
@@ -431,7 +428,10 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
         }
 
         try {
-            IOUtils.close(debugger);
+            if (debugger != null) {
+                debugger.close();
+                debugger = null;
+            }
 
             closeInternal();
 

@@ -28,7 +28,7 @@ public abstract class BaseTask implements RunnableTask {
 
         if (waiter != null &&
                 log.isTraceEnabled()) {
-            emulator.attach().debug();
+            emulator.attach().debug("setWaiter: " + waiter);
         }
     }
 

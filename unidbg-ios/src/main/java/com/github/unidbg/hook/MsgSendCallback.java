@@ -5,6 +5,9 @@ import com.sun.jna.Pointer;
 
 public interface MsgSendCallback {
 
-    void onMsgSend(Emulator<?> emulator, boolean systemClass, String className, String cmd, Pointer lr);
+    /**
+     * @return <code>true</code>表示 skip call
+     */
+    boolean onMsgSend(Emulator<?> emulator, boolean systemClass, String className, String cmd, Pointer lr);
 
 }

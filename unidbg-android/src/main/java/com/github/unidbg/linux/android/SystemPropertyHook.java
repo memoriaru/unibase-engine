@@ -96,7 +96,7 @@ public class SystemPropertyHook implements HookListener {
                                 log.debug("__system_property_find key={}, LR={}", this.name, context.getLRPointer());
                             }
                             if (log.isTraceEnabled()) {
-                                emulator.attach().debug();
+                                emulator.attach().debug("__system_property_find key=" + this.name);
                             }
                             return HookStatus.RET(emulator, old);
                         }
@@ -126,7 +126,7 @@ public class SystemPropertyHook implements HookListener {
                                 log.debug("__system_property_find key={}, LR={}", name.getString(0), context.getLRPointer());
                             }
                             if (log.isTraceEnabled()) {
-                                emulator.attach().debug();
+                                emulator.attach().debug("__system_property_find key=" + name.getString(0));
                             }
                             return HookStatus.RET(emulator, old);
                         }

@@ -10,6 +10,8 @@ static NSString *name = @"iPhone5S";
 static NSString *identifierForVendor = @"00000000-0000-0000-0000-000000000000";
 const NSOperatingSystemVersion g_systemVersion = { 7, 1, 2 };
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wobjc-protocol-method-implementation"
 @implementation NSProcessInfo (Foundation)
 - (NSOperatingSystemVersion) operatingSystemVersion {
   return g_systemVersion;
@@ -18,6 +20,10 @@ const NSOperatingSystemVersion g_systemVersion = { 7, 1, 2 };
   return NSProcessInfoThermalStateNominal;
 }
 - (BOOL) isLowPowerModeEnabled {
+  return YES;
+}
+- (BOOL) isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion) version {
+  NSLog(@"NSProcessInfo.isOperatingSystemAtLeastVersion: %ld.%ld.%ld", version.majorVersion, version.minorVersion, version.patchVersion);
   return YES;
 }
 @end
@@ -189,6 +195,9 @@ const CGRect g_frame = { 0, 0, 768, 1024 };
 @end
 
 @implementation UIView
++ (NSTimeInterval)inheritedAnimationDuration {
+  return 1.0;
+}
 + (id)appearance {
   return nil;
 }
@@ -218,6 +227,9 @@ const CGRect g_frame = { 0, 0, 768, 1024 };
 - (UIView *)snapshotViewAfterScreenUpdates:(BOOL)afterUpdates {
   return self;
 }
+- (NSArray *)gestureRecognizers {
+  return [NSArray array];
+}
 @end
 
 @implementation UIWindow
@@ -240,6 +252,9 @@ const CGRect g_frame = { 0, 0, 768, 1024 };
 }
 - (id) m_appViewControllerMgr {
     return nil;
+}
+- (void) application:(UIApplication *) application didRegisterForRemoteNotificationsWithDeviceToken:(NSData *) deviceToken {
+    NSLog(@"didRegisterForRemoteNotificationsWithDeviceToken: %@", deviceToken);
 }
 @end
 
@@ -355,8 +370,15 @@ static UIApplication *sharedApplication;
     return systemName;
 }
 - (NSUUID *)identifierForVendor {
+    uintptr_t lr = (uintptr_t) __builtin_return_address(0);
+    char buf[512];
+    print_lr(buf, lr);
     NSUUID *uuid = [NSUUID alloc];
     [uuid initWithUUIDString:identifierForVendor];
+    int debug = is_debug();
+    if(debug) {
+      NSLog(@"UIDevice.identifierForVendor uuid=%@, LR=%s", uuid, buf);
+    }
     return uuid;
 }
 - (NSString *)name {
@@ -365,6 +387,10 @@ static UIApplication *sharedApplication;
 
 - (UIDeviceBatteryState)batteryState {
     return UIDeviceBatteryStateUnplugged;
+}
+
+- (UIDeviceOrientation)orientation {
+    return UIDeviceOrientationPortrait;
 }
 
 @end
@@ -467,6 +493,11 @@ static UIApplication *sharedApplication;
     return nil;
 }
 @end
+@implementation NSDate (Foundation)
++ (id)now {
+    return [NSDate date];
+}
+@end
 #pragma clang diagnostic pop
 
 @implementation UINavigationItem
@@ -481,6 +512,11 @@ static UIApplication *sharedApplication;
     return self;
 }
 - (void)setExtendedLayoutIncludesOpaqueBars: (BOOL)flag {
+}
+- (UITraitCollection *)traitCollection {
+  return [UITraitCollection new];
+}
+- (void) viewWillAppear:(BOOL) animated {
 }
 @end
 
@@ -623,6 +659,62 @@ BOOL UIAccessibilityDarkerSystemColorsEnabled() {
 @implementation BRQuery
 @end
 
+// Compiler-emitted constant array literal layout (__objc_arrayobj):
+//   isa | count | id *objs
+struct __NSConstantArray {
+    Class isa;
+    unsigned long count;
+    const id *objs;
+};
+
+// Compiler-emitted constant dictionary literal layout (__objc_dictobj):
+//   isa | options | count | id *keys | id *objs
+// keys[] is immediately followed by objs[], both sized `count`.
+struct __NSConstantDictionary {
+    Class isa;
+    unsigned long options;
+    unsigned long count;
+    const id *keys;
+    const id *objs;
+};
+
+@implementation NSConstantArray
+- (unsigned long)count {
+    return ((struct __NSConstantArray *)self)->count;
+}
+- (id)objectAtIndex:(NSUInteger)index {
+    struct __NSConstantArray *a = (struct __NSConstantArray *)self;
+    if (index >= a->count) {
+        [NSException raise:NSRangeException format:@"index %lu beyond bounds [0 .. %lu]", (unsigned long)index, a->count ? a->count - 1 : 0];
+    }
+    return (id)a->objs[index];
+}
+@end
+
+@implementation NSConstantDictionary
+- (NSUInteger)count {
+    return (NSUInteger)((struct __NSConstantDictionary *)self)->count;
+}
+- (id)objectForKey:(id)aKey {
+    struct __NSConstantDictionary *d = (struct __NSConstantDictionary *)self;
+    for (unsigned long i = 0; i < d->count; i++) {
+        id key = (id)d->keys[i];
+        if (key == aKey || [key isEqual:aKey]) {
+            return (id)d->objs[i];
+        }
+    }
+    return nil;
+}
+- (NSEnumerator *)keyEnumerator {
+    struct __NSConstantDictionary *d = (struct __NSConstantDictionary *)self;
+    NSMutableArray *keys = [NSMutableArray arrayWithCapacity:(NSUInteger)d->count];
+    for (unsigned long i = 0; i < d->count; i++) {
+        [keys addObject:(id)d->keys[i]];
+    }
+    return [keys objectEnumerator];
+}
+@end
+
 @implementation NSConstantIntegerNumber
 - (const char *)objCType {
   return self->_encoding;
@@ -687,4 +779,5 @@ __attribute__((constructor))
 void init() {
   __NSArray0__ = [NSArray array];
   __NSDictionary0__ = [NSDictionary dictionary];
+  [UIDevice currentDevice];
 }

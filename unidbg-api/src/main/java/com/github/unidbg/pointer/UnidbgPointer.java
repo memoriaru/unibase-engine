@@ -4,6 +4,7 @@ import com.github.unidbg.Emulator;
 import com.github.unidbg.InvalidMemoryAccessException;
 import com.github.unidbg.Module;
 import com.github.unidbg.PointerArg;
+import com.github.unidbg.Utils;
 import com.github.unidbg.arm.backend.Backend;
 import com.github.unidbg.memory.Memory;
 import com.github.unidbg.memory.MemoryMap;
@@ -320,13 +321,7 @@ public class UnidbgPointer extends Pointer implements PointerArg {
         ByteArrayOutputStream baos = new ByteArrayOutputStream(0x40);
         while (true) {
             byte[] data = backend.mem_read(addr, 0x10);
-            int length = data.length;
-            for (int i = 0; i < data.length; i++) {
-                if (data[i] == 0) {
-                    length = i;
-                    break;
-                }
-            }
+            int length = Utils.indexOfNullTerminator(data);
             baos.write(data, 0, length);
             addr += length;
 

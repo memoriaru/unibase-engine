@@ -559,7 +559,7 @@ public class Dyld32 extends Dyld {
                     }
                     log.info("dlopen failed: {}", path);
                     if (log.isDebugEnabled()) {
-                        emulator.attach().debug();
+                        emulator.attach().debug("dlopen failed: " + path);
                     }
                 }
                 return 0;
@@ -616,7 +616,7 @@ public class Dyld32 extends Dyld {
                         @Override
                         public long handle(Emulator<?> emulator) {
                             System.err.println("abort");
-                            emulator.attach().debug();
+                            emulator.attach().debug("abort() called");
                             emulator.getBackend().reg_write(ArmConst.UC_ARM_REG_LR, emulator.getReturnAddress());
                             return 0;
                         }

@@ -4,7 +4,11 @@ import com.github.unidbg.pointer.UnidbgPointer;
 
 public interface Breaker {
 
-    void debug();
+    default void debug() {
+        debug(null);
+    }
+
+    void debug(String reason);
 
     void brk(UnidbgPointer pc, int svcNumber);
 

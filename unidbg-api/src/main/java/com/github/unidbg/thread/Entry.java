@@ -27,6 +27,11 @@ public class Entry extends MainTask {
     }
 
     @Override
+    public long getAddress() {
+        return entry;
+    }
+
+    @Override
     public String toThreadString() {
         return "Executable entry=0x" + Long.toHexString(entry) + ", sp=0x" + Long.toHexString(sp);
     }

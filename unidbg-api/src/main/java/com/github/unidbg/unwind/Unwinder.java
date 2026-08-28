@@ -27,6 +27,17 @@ public abstract class Unwinder {
 
     protected abstract String getBaseFormat();
 
+    public final java.util.List<Frame> getFrames(int maxDepth) {
+        java.util.List<Frame> frames = new java.util.ArrayList<>();
+        Frame frame = null;
+        while ((frame = unw_step(emulator, frame)) != null) {
+            if (frame.isFinish()) break;
+            frames.add(frame);
+            if (frames.size() >= maxDepth) break;
+        }
+        return frames;
+    }
+
     public final void unwind() {
         Memory memory = emulator.getMemory();
         String maxLengthSoName = memory.getMaxLengthLibraryName();

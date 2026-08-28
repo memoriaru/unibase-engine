@@ -21,6 +21,8 @@ public abstract class MainTask extends AbstractTask implements Task {
 
     protected abstract Number run(AbstractEmulator<?> emulator);
 
+    public abstract long getAddress();
+
     @Override
     public boolean isMainThread() {
         return true;

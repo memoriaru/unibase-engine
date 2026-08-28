@@ -94,7 +94,8 @@ public class Substrate64Test extends EmulatorTest<ARMEmulator<DarwinFileIO>> imp
     }
 
     @Override
-    public void onMsgSend(Emulator<?> emulator, boolean systemClass, String className, String cmd, Pointer lr) {
+    public boolean onMsgSend(Emulator<?> emulator, boolean systemClass, String className, String cmd, Pointer lr) {
 //        System.out.printf("onMsgSend [%s %s] from %s\n", className, cmd, lr);
+        return false;
     }
 }

@@ -365,7 +365,7 @@ public abstract class AndroidSyscallHandler extends UnixSyscallHandler<AndroidFi
                 return 0;
             default:
                 if (log.isDebugEnabled()) {
-                    emulator.attach().debug();
+                    emulator.attach().debug("Unsupported futex_op=0x" + Integer.toHexString(futex_op));
                 }
                 throw new AbstractMethodError("futex_op=0x" + Integer.toHexString(futex_op));
         }
@@ -396,7 +396,7 @@ public abstract class AndroidSyscallHandler extends UnixSyscallHandler<AndroidFi
         log.info("rt_sigtimedwait set={}, info={}, timeout={}, sigsetsize={}, sigSet={}, task={}", set, info, timeout, sigsetsize, sigSet, task);
         Logger log = LoggerFactory.getLogger(AbstractEmulator.class);
         if (log.isDebugEnabled()) {
-            emulator.attach().debug();
+            emulator.attach().debug("rt_sigtimedwait sigSet=" + sigSet);
         }
         return 0;
     }
@@ -623,7 +623,7 @@ public abstract class AndroidSyscallHandler extends UnixSyscallHandler<AndroidFi
         }
         System.out.println("exit status=" + status);
         if (LoggerFactory.getLogger(AbstractEmulator.class).isDebugEnabled()) {
-            emulator.attach().debug();
+            emulator.attach().debug("exit status=" + status);
         }
         emulator.getBackend().emu_stop();
     }

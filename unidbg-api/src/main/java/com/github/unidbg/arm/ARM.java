@@ -47,6 +47,15 @@ public class ARM {
         return (ins & 0xe000) == 0xe000 && (ins & 0x1800) != 0x0000;
     }
 
+    private static void appendCpsr(StringBuilder builder, Cpsr cpsr) {
+        builder.append(String.format(Locale.US, " cpsr: N=%d, Z=%d, C=%d, V=%d, T=%d, mode=0b",
+                cpsr.isNegative() ? 1 : 0,
+                cpsr.isZero() ? 1 : 0,
+                cpsr.hasCarry() ? 1 : 0,
+                cpsr.isOverflow() ? 1 : 0,
+                cpsr.isThumb() ? 1 : 0)).append(Integer.toBinaryString(cpsr.getMode()));
+    }
+
     public static void showThumbRegs(Emulator<?> emulator) {
         showRegs(emulator, ARM.THUMB_REGS);
     }
@@ -65,12 +74,7 @@ public class ARM {
             switch (reg) {
                 case ArmConst.UC_ARM_REG_CPSR:
                     Cpsr cpsr = Cpsr.getArm(backend);
-                    builder.append(String.format(Locale.US, " cpsr: N=%d, Z=%d, C=%d, V=%d, T=%d, mode=0b",
-                            cpsr.isNegative() ? 1 : 0,
-                            cpsr.isZero() ? 1 : 0,
-                            cpsr.hasCarry() ? 1 : 0,
-                            cpsr.isOverflow() ? 1 : 0,
-                            cpsr.isThumb() ? 1 : 0)).append(Integer.toBinaryString(cpsr.getMode()));
+                    appendCpsr(builder, cpsr);
                     break;
                 case ArmConst.UC_ARM_REG_R0:
                     number = backend.reg_read(reg);
@@ -284,12 +288,7 @@ public class ARM {
                 case Arm64Const.UC_ARM64_REG_NZCV:
                     Cpsr cpsr = Cpsr.getArm64(backend);
                     if (cpsr.isA32()) {
-                        builder.append(String.format(Locale.US, " cpsr: N=%d, Z=%d, C=%d, V=%d, T=%d, mode=0b",
-                                cpsr.isNegative() ? 1 : 0,
-                                cpsr.isZero() ? 1 : 0,
-                                cpsr.hasCarry() ? 1 : 0,
-                                cpsr.isOverflow() ? 1 : 0,
-                                cpsr.isThumb() ? 1 : 0)).append(Integer.toBinaryString(cpsr.getMode()));
+                        appendCpsr(builder, cpsr);
                     } else {
                         int el = cpsr.getEL();
                         builder.append(String.format(Locale.US, "\nnzcv: N=%d, Z=%d, C=%d, V=%d, EL%d, use SP_EL",
@@ -703,7 +702,7 @@ public class ARM {
         System.out.println(builder);
     }
 
-    private static BigInteger newBigInteger(byte[] data) {
+    static BigInteger newBigInteger(byte[] data) {
         if (data.length != 16) {
             throw new IllegalStateException("data.length=" + data.length);
         }
@@ -970,13 +969,7 @@ public class ARM {
             if (ins.mapToUnicornReg(mem.getBase()) == ArmConst.UC_ARM_REG_PC) {
                 addr += (thumb ? 4 : 8);
             }
-            int bytesRead = 4;
-            if (ins.getMnemonic().startsWith("ldrb") || ins.getMnemonic().startsWith("strb")) {
-                bytesRead = 1;
-            }
-            if (ins.getMnemonic().startsWith("ldrh") || ins.getMnemonic().startsWith("strh")) {
-                bytesRead = 2;
-            }
+            int bytesRead = memAccessBytes(ins, 4);
             appendAddrValue(sb, addr, memory, emulator.is64Bit(), bytesRead);
             return;
         }
@@ -1042,12 +1035,7 @@ public class ARM {
             }
         }
         if (addr != -1) {
-            if (ins.getMnemonic().startsWith("ldrb") || ins.getMnemonic().startsWith("strb")) {
-                bytesRead = 1;
-            }
-            if (ins.getMnemonic().startsWith("ldrh") || ins.getMnemonic().startsWith("strh")) {
-                bytesRead = 2;
-            }
+            bytesRead = memAccessBytes(ins, bytesRead);
             appendAddrValue(sb, addr, memory, emulator.is64Bit(), bytesRead);
         }
     }
@@ -1120,6 +1108,17 @@ public class ARM {
         }
 
         return builder.toString();
+    }
+
+    private static int memAccessBytes(Instruction ins, int defaultBytes) {
+        String mnemonic = ins.getMnemonic();
+        if (mnemonic.startsWith("ldrb") || mnemonic.startsWith("strb")) {
+            return 1;
+        }
+        if (mnemonic.startsWith("ldrh") || mnemonic.startsWith("strh")) {
+            return 2;
+        }
+        return defaultBytes;
     }
 
     private static void appendAddrValue(StringBuilder sb, long addr, Memory memory, boolean is64Bit, int bytesRead) {

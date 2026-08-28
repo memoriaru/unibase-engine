@@ -9,6 +9,7 @@ import com.github.unidbg.arm.context.RegisterContext;
 import com.github.unidbg.ios.hook.FishHook;
 import com.github.unidbg.ios.hook.Substrate;
 import com.github.unidbg.memory.SvcMemory;
+import com.github.unidbg.pointer.UnidbgPointer;
 import com.sun.jna.Pointer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -111,10 +112,14 @@ public class HookLoader extends BaseHook {
         RegisterContext context = emulator.getContext();
         boolean systemClass = context.getIntArg(0) != 0;
         Pointer classNamePointer = context.getPointerArg(1);
-        String cmd = context.getPointerArg(2).getString(0);
+        Pointer sel = context.getPointerArg(2);
+        String cmd = sel.getString(0);
         Pointer lr = context.getPointerArg(3);
-        callback.onMsgSend(emulator, systemClass, classNamePointer == null ? null : classNamePointer.getString(0), cmd, lr);
-        return 0;
+        if (callback.onMsgSend(emulator, systemClass, classNamePointer == null ? null : classNamePointer.getString(0), cmd, lr)) {
+            return UnidbgPointer.nativeValue(sel);
+        } else {
+            return 0;
+        }
     }
 
 }

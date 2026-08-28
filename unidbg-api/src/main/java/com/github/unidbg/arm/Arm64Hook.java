@@ -43,18 +43,24 @@ public abstract class Arm64Hook extends Arm64Svc {
         if (enablePostCall) {
             try (Keystone keystone = new Keystone(KeystoneArchitecture.Arm64, KeystoneMode.LittleEndian)) {
                 KeystoneEncoded encoded = keystone.assemble(Arrays.asList(
+                        "sub sp, sp, #0x20",
+                        "stp x29, x30, [sp, #0x10]",
+                        "str x13, [sp, #0x8]",
                         "svc #0x" + Integer.toHexString(svcNumber),
 
                         "ldr x13, [sp]",
                         "add sp, sp, #0x8",
                         "cmp x13, #0",
-                        "b.eq #0x30",
+                        "b.eq #0x34",
                         "blr x13",
                         "mov x8, #0",
                         "mov x12, #0x" + Integer.toHexString(svcNumber),
                         "mov x16, #0x" + Integer.toHexString(Svc.POST_CALLBACK_SYSCALL_NUMBER),
                         "svc #0",
 
+                        "ldr x13, [sp, #0x8]",
+                        "ldp x29, x30, [sp, #0x10]",
+                        "add sp, sp, #0x20",
                         "ret"));
                 code = encoded.getMachineCode();
             }
@@ -76,30 +82,16 @@ public abstract class Arm64Hook extends Arm64Svc {
     }
 
     @Override
-    public void handlePostCallback(Emulator<?> emulator) {
-        super.handlePostCallback(emulator);
-
-        if (regContext == null) {
-            throw new IllegalStateException();
-        } else {
-            regContext.restore();
-        }
-    }
-
-    private RegContext regContext;
-
-    @Override
     public final long handle(Emulator<?> emulator) {
         Backend backend = emulator.getBackend();
-        if (enablePostCall) {
-            regContext = RegContext.backupContext(emulator, Arm64Const.UC_ARM64_REG_X29,
-                    Arm64Const.UC_ARM64_REG_X30);
-        }
         UnidbgPointer sp = UnidbgPointer.register(emulator, Arm64Const.UC_ARM64_REG_SP);
         try {
             HookStatus status = doHook(emulator);
             sp = sp.share(-8, 0);
             if (status.forward || !enablePostCall) {
+                if (log.isDebugEnabled()) {
+                    log.debug("ARM64 hook: sp={}, jump=0x{}", sp, Long.toHexString(status.jump));
+                }
                 sp.setLong(0, status.jump);
             } else {
                 sp.setLong(0, 0);

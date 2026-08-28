@@ -75,7 +75,7 @@ public abstract class DarwinSyscallHandler extends UnixSyscallHandler<DarwinFile
         RegisterContext context = emulator.getContext();
         int status = context.getIntArg(0);
         if (status != 0 || LoggerFactory.getLogger(AbstractEmulator.class).isDebugEnabled()) {
-            emulator.attach().debug();
+            emulator.attach().debug("exit status=" + status);
         }
         System.exit(status);
     }
@@ -510,7 +510,7 @@ public abstract class DarwinSyscallHandler extends UnixSyscallHandler<DarwinFile
             log.debug("_semaphore_wait_trap port={}, LR={}", port, context.getLRPointer());
         }
         if (log.isDebugEnabled()) {
-            createBreaker(emulator).debug();
+            createBreaker(emulator).debug("_semaphore_wait_trap port=" + port);
         }
         RunnableTask runningTask = emulator.getThreadDispatcher().getRunningTask();
         if (threadDispatcherEnabled && runningTask != null) {
@@ -518,7 +518,7 @@ public abstract class DarwinSyscallHandler extends UnixSyscallHandler<DarwinFile
             throw new ThreadContextSwitchException().setReturnValue(0);
         }
         if (LoggerFactory.getLogger(AbstractEmulator.class).isDebugEnabled()) {
-            createBreaker(emulator).debug();
+            createBreaker(emulator).debug("_semaphore_wait_trap port=" + port);
         }
         return 0;
     }
@@ -543,7 +543,7 @@ public abstract class DarwinSyscallHandler extends UnixSyscallHandler<DarwinFile
         }
         if (mutex_sem != 0 || timeout != 0 ||
                 relative != 0 || tv_sec != 0 || tv_nsec != 0) {
-            createBreaker(emulator).debug();
+            createBreaker(emulator).debug("semwait_signal cond_sem=" + cond_sem);
             throw new UnsupportedOperationException("semwait_signal cond_sem=" + cond_sem + ", mutex_sem=" + mutex_sem + ", timeout=" + timeout + ", relative=" + relative + ", tv_sec=" + tv_sec + ", tv_nsec=" + tv_nsec);
         }
         runningTask.setWaiter(emulator, new SemWaiter(cond_sem, semaphoreMap));
@@ -604,7 +604,7 @@ public abstract class DarwinSyscallHandler extends UnixSyscallHandler<DarwinFile
         log.info("sigwait set={}, sig={}", set, sig);
         Logger log = LoggerFactory.getLogger(AbstractEmulator.class);
         if (log.isDebugEnabled()) {
-            emulator.attach().debug();
+            emulator.attach().debug("sigwait");
         }
         return 0;
     }
@@ -754,7 +754,7 @@ public abstract class DarwinSyscallHandler extends UnixSyscallHandler<DarwinFile
             throw new ThreadContextSwitchException();
         }
         if (log.isDebugEnabled() || LoggerFactory.getLogger(AbstractEmulator.class).isDebugEnabled()) {
-            createBreaker(emulator).debug();
+            createBreaker(emulator).debug("kevent64 unhandled");
         }
         return 0;
     }
@@ -829,7 +829,7 @@ public abstract class DarwinSyscallHandler extends UnixSyscallHandler<DarwinFile
                     System.out.printf("bsdthread_create start_routine=%s, stack=%s, thread=%s%n", start_routine, stack, thread);
                 }
                 if (log.isTraceEnabled()) {
-                    createBreaker(emulator).debug();
+                    createBreaker(emulator).debug("bsdthread_create start_routine=" + start_routine);
                 }
 
                 emulator.getThreadDispatcher().addThread(new BsdThread(emulator, threadId, thread_start, thread, start_routine, arg, stackSize));
@@ -849,7 +849,7 @@ public abstract class DarwinSyscallHandler extends UnixSyscallHandler<DarwinFile
             log.debug("swtch_pri pri={}, LR={}", pri, context.getLRPointer());
         }
         if (log.isDebugEnabled() || LoggerFactory.getLogger(AbstractEmulator.class).isDebugEnabled()) {
-            createBreaker(emulator).debug();
+            createBreaker(emulator).debug("swtch_pri pri=" + pri);
         }
         return 0;
     }

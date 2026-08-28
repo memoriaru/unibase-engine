@@ -55,7 +55,7 @@ public class TaskDyldInfo extends UnidbgStructure {
             System.out.printf("task_info TASK_DYLD_INFO called with %d modules from %s%n", modules.size(), emulator.getContext().getLRPointer());
         }
         if (log.isTraceEnabled()) {
-            emulator.attach().debug();
+            emulator.attach().debug("TASK_DYLD_INFO");
         }
 
         MachOModule libdyld = (MachOModule) emulator.getMemory().findModule("libdyld.dylib");

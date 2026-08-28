@@ -13,22 +13,6 @@ extern "C" {
 #define com_github_unidbg_arm_backend_hypervisor_Hypervisor_PSTATE_00024SS 2097152LL
 /*
  * Class:     com_github_unidbg_arm_backend_hypervisor_Hypervisor
- * Method:    testVcpu
- * Signature: ()V
- */
-JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_hypervisor_Hypervisor_testVcpu
-  (JNIEnv *, jclass);
-
-/*
- * Class:     com_github_unidbg_arm_backend_hypervisor_Hypervisor
- * Method:    getPageSize
- * Signature: ()I
- */
-JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_hypervisor_Hypervisor_getPageSize
-  (JNIEnv *, jclass);
-
-/*
- * Class:     com_github_unidbg_arm_backend_hypervisor_Hypervisor
  * Method:    setHypervisorCallback
  * Signature: (JLcom/github/unidbg/arm/backend/hypervisor/HypervisorCallback;)I
  */
@@ -133,6 +117,14 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_hypervisor_Hypervisor_
 
 /*
  * Class:     com_github_unidbg_arm_backend_hypervisor_Hypervisor
+ * Method:    reg_set_pc64
+ * Signature: (JJ)I
+ */
+JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_hypervisor_Hypervisor_reg_1set_1pc64
+  (JNIEnv *, jclass, jlong, jlong);
+
+/*
+ * Class:     com_github_unidbg_arm_backend_hypervisor_Hypervisor
  * Method:    reg_read_vector
  * Signature: (JI)[B
  */
@@ -229,11 +221,19 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_hypervisor_Hypervisor_
 
 /*
  * Class:     com_github_unidbg_arm_backend_hypervisor_Hypervisor
- * Method:    context_alloc
- * Signature: ()J
+ * Method:    mem_allocated_size
+ * Signature: (J)J
  */
-JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_hypervisor_Hypervisor_context_1alloc
-  (JNIEnv *, jclass);
+JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_hypervisor_Hypervisor_mem_1allocated_1size
+  (JNIEnv *, jclass, jlong);
+
+/*
+ * Class:     com_github_unidbg_arm_backend_hypervisor_Hypervisor
+ * Method:    mem_resident_size
+ * Signature: (J)J
+ */
+JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_hypervisor_Hypervisor_mem_1resident_1size
+  (JNIEnv *, jclass, jlong);
 
 /*
  * Class:     com_github_unidbg_arm_backend_hypervisor_Hypervisor
@@ -250,14 +250,6 @@ JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_hypervisor_Hypervisor_
  */
 JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_hypervisor_Hypervisor_context_1restore
   (JNIEnv *, jclass, jlong, jlong);
-
-/*
- * Class:     com_github_unidbg_arm_backend_hypervisor_Hypervisor
- * Method:    free
- * Signature: (J)V
- */
-JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_hypervisor_Hypervisor_free
-  (JNIEnv *, jclass, jlong);
 
 /*
  * Class:     com_github_unidbg_arm_backend_hypervisor_Hypervisor
@@ -325,11 +317,27 @@ JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_hypervisor_Hypervisor_
 
 /*
  * Class:     com_github_unidbg_arm_backend_hypervisor_Hypervisor
+ * Method:    install_hw_breakpoint_range
+ * Signature: (JIJJ)V
+ */
+JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_hypervisor_Hypervisor_install_1hw_1breakpoint_1range
+  (JNIEnv *, jclass, jlong, jint, jlong, jlong);
+
+/*
+ * Class:     com_github_unidbg_arm_backend_hypervisor_Hypervisor
  * Method:    install_watchpoint
  * Signature: (JIJJ)V
  */
 JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_hypervisor_Hypervisor_install_1watchpoint
   (JNIEnv *, jclass, jlong, jint, jlong, jlong);
+
+/*
+ * Class:     com_github_unidbg_arm_backend_hypervisor_Hypervisor
+ * Method:    get_page_perms
+ * Signature: (JJ)I
+ */
+JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_hypervisor_Hypervisor_get_1page_1perms
+  (JNIEnv *, jclass, jlong, jlong);
 
 #ifdef __cplusplus
 }

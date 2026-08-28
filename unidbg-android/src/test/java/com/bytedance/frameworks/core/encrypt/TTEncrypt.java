@@ -6,18 +6,14 @@ import com.github.unidbg.Emulator;
 import com.github.unidbg.Module;
 import com.github.unidbg.Symbol;
 import com.github.unidbg.arm.HookStatus;
+import com.github.unidbg.arm.backend.Backend;
 import com.github.unidbg.arm.backend.Unicorn2Factory;
 import com.github.unidbg.arm.context.Arm32RegisterContext;
 import com.github.unidbg.arm.context.RegisterContext;
 import com.github.unidbg.debugger.DebuggerType;
 import com.github.unidbg.hook.HookContext;
 import com.github.unidbg.hook.ReplaceCallback;
-import com.github.unidbg.hook.hookzz.Dobby;
-import com.github.unidbg.hook.hookzz.HookEntryInfo;
-import com.github.unidbg.hook.hookzz.HookZz;
-import com.github.unidbg.hook.hookzz.IHookZz;
-import com.github.unidbg.hook.hookzz.InstrumentCallback;
-import com.github.unidbg.hook.hookzz.WrapCallback;
+import com.github.unidbg.hook.hookzz.*;
 import com.github.unidbg.hook.xhook.IxHook;
 import com.github.unidbg.linux.android.AndroidEmulatorBuilder;
 import com.github.unidbg.linux.android.AndroidResolver;
@@ -61,6 +57,11 @@ public class TTEncrypt {
         TTEncryptUtils = vm.resolveClass("com/bytedance/frameworks/core/encrypt/TTEncryptUtils");
     }
 
+    @Override
+    public String toString() {
+        return "TTEncrypt backend=" + emulator.getBackend();
+    }
+
     void destroy() {
         IOUtils.close(emulator);
         if (logging) {
@@ -73,6 +74,8 @@ public class TTEncrypt {
 
         byte[] data = test.ttEncrypt();
         Inspector.inspect(data, "ttEncrypt");
+        Backend backend = test.emulator.getBackend();
+        System.out.printf("allocatedSize=0x%x, residentSize=0x%x%n", backend.getMemAllocatedSize(), backend.getMemResidentSize());
 
         test.destroy();
     }

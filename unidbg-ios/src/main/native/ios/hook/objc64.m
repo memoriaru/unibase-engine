@@ -29,7 +29,10 @@ void new_objc_msgSend(id self, SEL _cmd) {
     "ldp q2, q3, [sp], #32\n"
     "ldp q4, q5, [sp], #32\n"
     "ldp q6, q7, [sp], #32\n"
-    // Call through to the original objc_msgSend.
+    // If pre_objc_msgSend returned NULL, use lr so br x9 acts as ret.
+    "cmp x9, #0\n"
+    "csel x9, lr, x9, eq\n"
+    // Call through to the original objc_msgSend (or return if x9 was NULL).
     "br x9\n"
   );
 }

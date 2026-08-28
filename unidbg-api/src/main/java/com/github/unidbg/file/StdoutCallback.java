@@ -2,6 +2,9 @@ package com.github.unidbg.file;
 
 public interface StdoutCallback {
 
-    void notifyOut(byte[] data, boolean err);
+    /**
+     * @return <code>true</code>表示打印
+     */
+    boolean notifyOut(byte[] data, boolean err);
 
 }

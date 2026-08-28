@@ -1,12 +1,6 @@
 package com.github.unidbg.ios;
 
-import com.github.unidbg.Alignment;
-import com.github.unidbg.Emulator;
-import com.github.unidbg.LibraryResolver;
-import com.github.unidbg.Module;
-import com.github.unidbg.Svc;
-import com.github.unidbg.Symbol;
-import com.github.unidbg.Utils;
+import com.github.unidbg.*;
 import com.github.unidbg.arm.ARM;
 import com.github.unidbg.arm.Arm64Hook;
 import com.github.unidbg.arm.Arm64Svc;
@@ -37,6 +31,7 @@ import com.github.unidbg.memory.MemoryMap;
 import com.github.unidbg.pointer.UnidbgPointer;
 import com.github.unidbg.pointer.UnidbgStructure;
 import com.github.unidbg.spi.AbstractLoader;
+import com.github.unidbg.spi.InitFunctionFilter;
 import com.github.unidbg.spi.LibraryFile;
 import com.github.unidbg.spi.Loader;
 import com.github.unidbg.thread.Task;
@@ -276,6 +271,10 @@ public class MachOLoader extends AbstractLoader<DarwinFileIO> implements Memory,
     }
 
     private com.github.unidbg.ios.Loader loader;
+
+    public boolean isUseOverrideResolver() {
+        return loader != null && loader.isUseOverrideResolver();
+    }
 
     public void setLoader(com.github.unidbg.ios.Loader loader) {
         this.loader = loader;
@@ -546,6 +545,9 @@ public class MachOLoader extends AbstractLoader<DarwinFileIO> implements Memory,
         }
 
         final List<NeedLibrary> neededList = new ArrayList<>();
+        if (checkBootstrap && isExecutable) {
+            neededList.add(new NeedLibrary("/System/Library/Frameworks/UIKit.framework/UIKit", false, false));
+        }
         final List<MemRegion> regions = new ArrayList<>(5);
         final List<MachO.DylibCommand> exportDylibs = new ArrayList<>();
         MachO.SymtabCommand symtabCommand = null;
@@ -746,7 +748,7 @@ public class MachOLoader extends AbstractLoader<DarwinFileIO> implements Memory,
                     if ("/usr/lib/libnetwork.dylib".equals(neededLibrary)) {
                         continue;
                     }
-                    log.info("Module \"{}\" load dependency {} failed: rpath={}", dyId, neededLibrary, rpathSet);
+                    log.info("Module \"{}\" load dependency \"{}\" failed: rpath={}", dyId, neededLibrary, rpathSet);
                 }
             }
         } else {
@@ -758,10 +760,14 @@ public class MachOLoader extends AbstractLoader<DarwinFileIO> implements Memory,
         }
 
         final long loadSize = size;
+        InitFunctionFilter initFunctionFilter = null;
+        if (libraryResolver instanceof InitFunctionFilter) {
+            initFunctionFilter = (InitFunctionFilter) libraryResolver;
+        }
         MachOModule module = new MachOModule(machO, dyId, loadBase, loadSize, new HashMap<>(neededLibraries), regions,
                 symtabCommand, dysymtabCommand, buffer, lazyLoadNeededList, upwardLibraries, exportModules, dylibPath, emulator,
                 dyldInfoCommand, chainedFixups, null, null, vars, machHeader, isExecutable, this, hookListeners, ordinalList,
-                fEHFrameSection, fUnwindInfoSection, objcSections, segments.toArray(new Segment[0]), libraryFile);
+                fEHFrameSection, fUnwindInfoSection, objcSections, segments.toArray(new Segment[0]), libraryFile, initFunctionFilter);
         if (isExecutable) {
             setExecuteModule(module);
         }
@@ -847,7 +853,8 @@ public class MachOLoader extends AbstractLoader<DarwinFileIO> implements Memory,
     private static final String RPATH = "@rpath";
 
     private LibraryFile resolveLibrary(LibraryFile libraryFile, String neededLibrary, Collection<String> rpathSet) throws IOException {
-        if (rpathSet.isEmpty() || !neededLibrary.contains(RPATH)) {
+        boolean isRPath = neededLibrary.contains(RPATH);
+        if (rpathSet.isEmpty() || !isRPath) {
             LibraryFile neededLibraryFile = libraryFile.resolveLibrary(emulator, neededLibrary);
             if (libraryResolver != null && neededLibraryFile == null) {
                 neededLibraryFile = libraryResolver.resolveLibrary(emulator, neededLibrary);
@@ -866,17 +873,24 @@ public class MachOLoader extends AbstractLoader<DarwinFileIO> implements Memory,
                     return neededLibraryFile;
                 }
             }
-            return null;
+            return libraryFile.resolveLibrary(emulator, neededLibrary.replace(RPATH, FilenameUtils.getFullPathNoEndSeparator(libraryFile.getPath())));
         }
     }
 
     private void __NSSetLogCStringFunction(Pointer message, int length, boolean withSysLogBanner) {
         byte[] data = message.getByteArray(0, length);
         String str = new String(data, StandardCharsets.UTF_8);
-        if (withSysLogBanner) {
-            System.err.println("NSLog: " + str);
-        } else {
-            System.out.println("NSLog: " + str);
+        boolean print = true;
+        if (libraryResolver instanceof NSLogListener) {
+            NSLogListener listener = (NSLogListener) libraryResolver;
+            print = listener.onLog(str);
+        }
+        if (print) {
+            if (withSysLogBanner) {
+                System.err.println("NSLog: " + str);
+            } else {
+                System.out.println("NSLog: " + str);
+            }
         }
     }
 
@@ -1744,9 +1758,42 @@ public class MachOLoader extends AbstractLoader<DarwinFileIO> implements Memory,
         if ("___NSArray0__".equals(symbolName) ||
                 "___NSDictionary0__".equals(symbolName) ||
                 "_OBJC_CLASS_$_NSConstantIntegerNumber".equals(symbolName) ||
+                "_OBJC_CLASS_$_NSConstantArray".equals(symbolName) ||
+                "_OBJC_CLASS_$_NSConstantDictionary".equals(symbolName) ||
                 "_NSProcessInfoPowerStateDidChangeNotification".equals(symbolName) ||
                 "_NSExtensionHostDidEnterBackgroundNotification".equals(symbolName) ||
-                "_NSExtensionHostDidBecomeActiveNotification".equals(symbolName)) {
+                "_NSExtensionHostDidBecomeActiveNotification".equals(symbolName) ||
+                "_objc_claimAutoreleasedReturnValue".equals(symbolName) ||
+                "_objc_retain_x1".equals(symbolName) ||
+                "_objc_release_x1".equals(symbolName) ||
+                "_objc_retain_x2".equals(symbolName) ||
+                "_objc_retain_x3".equals(symbolName) ||
+                "_objc_retain_x4".equals(symbolName) ||
+                "_objc_retain_x5".equals(symbolName) ||
+                "_objc_retain_x7".equals(symbolName) ||
+                "_objc_retain_x8".equals(symbolName) ||
+                "_objc_release_x8".equals(symbolName) ||
+                "_objc_release_x9".equals(symbolName) ||
+                "_objc_retain_x19".equals(symbolName) ||
+                "_objc_release_x19".equals(symbolName) ||
+                "_objc_retain_x20".equals(symbolName) ||
+                "_objc_release_x20".equals(symbolName) ||
+                "_objc_retain_x21".equals(symbolName) ||
+                "_objc_release_x21".equals(symbolName) ||
+                "_objc_retain_x22".equals(symbolName) ||
+                "_objc_release_x22".equals(symbolName) ||
+                "_objc_retain_x23".equals(symbolName) ||
+                "_objc_release_x23".equals(symbolName) ||
+                "_objc_retain_x24".equals(symbolName) ||
+                "_objc_release_x24".equals(symbolName) ||
+                "_objc_retain_x25".equals(symbolName) ||
+                "_objc_release_x25".equals(symbolName) ||
+                "_objc_retain_x26".equals(symbolName) ||
+                "_objc_release_x26".equals(symbolName) ||
+                "_objc_retain_x27".equals(symbolName) ||
+                "_objc_release_x27".equals(symbolName) ||
+                "_objc_retain_x28".equals(symbolName) ||
+                "_objc_release_x28".equals(symbolName)) {
             MachOModule fakeImage = this.modules.get("UIKit");
             if (fakeImage == null) {
                 fakeImage = this.modules.get("AppKit");
@@ -1755,7 +1802,7 @@ public class MachOLoader extends AbstractLoader<DarwinFileIO> implements Memory,
                 fakeImage = this.modules.get("IOKit");
             }
             if (fakeImage == null) {
-                emulator.attach().debug();
+                emulator.attach().debug("Symbol resolution failed: targetImage=" + targetImage + ", symbolName=" + symbolName);
                 throw new IllegalStateException(String.format("targetImage=%s, symbolName=%s", targetImage, symbolName));
             } else {
                 targetImage = fakeImage;

@@ -41,7 +41,7 @@ public abstract class DynarmicBackend extends FastBackend implements Backend, Dy
             return;
         }
         try {
-            emulator.attach().debug();
+            emulator.attach().debug("Dynarmic exception=" + exception);
         } catch (Exception e) {
             e.printStackTrace(System.err);
         }
@@ -208,5 +208,15 @@ public abstract class DynarmicBackend extends FastBackend implements Backend, Dy
     @Override
     public void context_restore(long context) {
         dynarmic.context_restore(context);
+    }
+
+    @Override
+    public long getMemAllocatedSize() {
+        return dynarmic.getMemAllocatedSize();
+    }
+
+    @Override
+    public long getMemResidentSize() {
+        return dynarmic.getMemResidentSize();
     }
 }

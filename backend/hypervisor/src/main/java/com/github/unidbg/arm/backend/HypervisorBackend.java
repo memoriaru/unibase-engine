@@ -14,6 +14,7 @@ import unicorn.UnicornConst;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.Objects;
 
 public abstract class HypervisorBackend extends FastBackend implements Backend, HypervisorCallback {
 
@@ -25,7 +26,7 @@ public abstract class HypervisorBackend extends FastBackend implements Backend, 
     protected HypervisorBackend(Emulator<?> emulator, Hypervisor hypervisor) throws BackendException {
         super(emulator);
         this.hypervisor = hypervisor;
-        this.pageSize = Hypervisor.getPageSize();
+        this.pageSize = HypervisorFactory.getPageSize();
         try {
             this.hypervisor.setHypervisorCallback(this);
         } catch (HypervisorException e) {
@@ -48,8 +49,7 @@ public abstract class HypervisorBackend extends FastBackend implements Backend, 
             }
             buffer.putInt(0xd4201100); // brk #0x88
         }
-        UnidbgPointer ptr = UnidbgPointer.pointer(emulator, Hypervisor.REG_VBAR_EL1);
-        assert ptr != null;
+        UnidbgPointer ptr = Objects.requireNonNull(UnidbgPointer.pointer(emulator, Hypervisor.REG_VBAR_EL1));
         ptr.write(buffer.array());
     }
 
@@ -85,6 +85,9 @@ public abstract class HypervisorBackend extends FastBackend implements Backend, 
 
     @Override
     public byte[] mem_read(long address, long size) throws BackendException {
+        if (size < 0 || size > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("invalid size: " + size);
+        }
         try {
             return hypervisor.mem_read(address, (int) size);
         } catch (HypervisorException e) {
@@ -159,22 +162,32 @@ public abstract class HypervisorBackend extends FastBackend implements Backend, 
     protected EventMemHookNotifier eventMemHookNotifier;
 
     @Override
-    public void hook_add_new(EventMemHook callback, int type, Object user_data) throws BackendException {
+    public void hook_add_new(EventMemHook callback, int type, Object userData) throws BackendException {
         if (eventMemHookNotifier != null) {
             throw new IllegalStateException();
         }
-        eventMemHookNotifier = new EventMemHookNotifier(callback, type, user_data);
+        eventMemHookNotifier = new EventMemHookNotifier(callback, type, userData);
     }
 
     protected InterruptHookNotifier interruptHookNotifier;
 
     @Override
-    public void hook_add_new(InterruptHook callback, Object user_data) throws BackendException {
+    public void hook_add_new(InterruptHook callback, Object userData) throws BackendException {
         if (interruptHookNotifier != null) {
             throw new IllegalStateException();
         } else {
-            interruptHookNotifier = new InterruptHookNotifier(callback, user_data);
+            interruptHookNotifier = new InterruptHookNotifier(callback, userData);
         }
+    }
+
+    protected final void notifyInterruptHook(int intno, int swi) {
+        if (log.isDebugEnabled()) {
+            log.debug("notifyInterruptHook intno={}, swi={}", intno, swi);
+        }
+        if (interruptHookNotifier == null) {
+            throw new IllegalStateException("interruptHookNotifier is null, bindInterruptHook not called before exception intno=" + intno + ", swi=" + swi);
+        }
+        interruptHookNotifier.notifyCallSVC(this, intno, swi);
     }
 
     protected final void callSVC(long pc, int swi) {
@@ -185,13 +198,15 @@ public abstract class HypervisorBackend extends FastBackend implements Backend, 
             emu_stop();
             return;
         }
-        interruptHookNotifier.notifyCallSVC(this, ARMEmulator.EXCP_SWI, swi);
+        notifyInterruptHook(ARMEmulator.EXCP_SWI, swi);
     }
 
     @Override
-    public void hook_add_new(BlockHook callback, long begin, long end, Object user_data) throws BackendException {
+    public void hook_add_new(BlockHook callback, long begin, long end, Object userData) throws BackendException {
         throw new UnsupportedOperationException();
     }
+
+    protected static final int INS_SIZE = 4;
 
     protected long until;
 
@@ -200,7 +215,7 @@ public abstract class HypervisorBackend extends FastBackend implements Backend, 
         if (log.isDebugEnabled()) {
             log.debug("emu_start begin=0x{}, until=0x{}, timeout={}, count={}", Long.toHexString(begin), Long.toHexString(until), timeout, count);
         }
-        this.until = until + 4;
+        this.until = until + INS_SIZE;
         try {
             hypervisor.emu_start(begin);
         } catch (HypervisorException e) {
@@ -225,5 +240,20 @@ public abstract class HypervisorBackend extends FastBackend implements Backend, 
     @Override
     public int getPageSize() {
         return pageSize;
+    }
+
+    @Override
+    public long getMemAllocatedSize() {
+        return hypervisor.getMemAllocatedSize();
+    }
+
+    @Override
+    public long getMemResidentSize() {
+        return hypervisor.getMemResidentSize();
+    }
+
+    @Override
+    public boolean isHypervisor() {
+        return true;
     }
 }

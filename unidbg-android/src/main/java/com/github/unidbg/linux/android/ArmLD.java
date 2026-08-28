@@ -274,7 +274,7 @@ public class ArmLD extends Dlfcn {
                             RegisterContext context = emulator.getContext();
                             Pointer pc = context.getPointerArg(0);
                             Pointer pcount = context.getPointerArg(1);
-                            log.info("dl_unwind_find_exidx pc{}, pcount={}", pc, pcount);
+                            log.info("dl_unwind_find_exidx pc={}, pcount={}", pc, pcount);
                             return 0;
                         }
                     }).peer;

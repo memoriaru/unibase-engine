@@ -11,6 +11,9 @@ import com.github.unidbg.Emulator;
 import com.github.unidbg.Family;
 import com.github.unidbg.arm.ARMEmulator;
 import com.github.unidbg.arm.backend.*;
+import com.github.unidbg.arm.backend.HypervisorFactory;
+import com.github.unidbg.arm.backend.hypervisor.arm64.MemorySizeDetector;
+import com.github.unidbg.arm.backend.hypervisor.arm64.SimpleMemorySizeDetector;
 import com.github.unidbg.debugger.BreakPoint;
 import com.github.unidbg.debugger.BreakPointCallback;
 import com.github.unidbg.pointer.UnidbgPointer;
@@ -22,16 +25,15 @@ import keystone.KeystoneMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import unicorn.Arm64Const;
+import unicorn.UnicornConst;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Stack;
+import java.util.*;
 
 public class HypervisorBackend64 extends HypervisorBackend {
 
     private static final Logger log = LoggerFactory.getLogger(HypervisorBackend64.class);
 
-    private static final int INS_SIZE = 4;
+    private static final MemorySizeDetector MEMORY_SIZE_DETECTOR = new SimpleMemorySizeDetector();
 
     public HypervisorBackend64(Emulator<?> emulator, Hypervisor hypervisor) throws BackendException {
         super(emulator, hypervisor);
@@ -41,6 +43,7 @@ public class HypervisorBackend64 extends HypervisorBackend {
     }
 
     private Disassembler disassembler;
+    private Keystone keystone;
 
     private synchronized Disassembler createDisassembler() {
         if (disassembler == null) {
@@ -48,6 +51,13 @@ public class HypervisorBackend64 extends HypervisorBackend {
             this.disassembler.setDetail(true);
         }
         return disassembler;
+    }
+
+    private synchronized Keystone getKeystone() {
+        if (keystone == null) {
+            this.keystone = new Keystone(KeystoneArchitecture.Arm64, KeystoneMode.LittleEndian);
+        }
+        return keystone;
     }
 
     private static final long DARWIN_KERNEL_BASE = 0xffffff80001f0000L;
@@ -64,15 +74,19 @@ public class HypervisorBackend64 extends HypervisorBackend {
 
     private DebugHook debugCallback;
     private Object debugUserData;
+    private long debugBegin;
+    private long debugEnd;
 
     @Override
-    public void debugger_add(DebugHook callback, long begin, long end, Object user_data) throws BackendException {
+    public void debugger_add(DebugHook callback, long begin, long end, Object userData) throws BackendException {
         this.debugCallback = callback;
-        this.debugUserData = user_data;
+        this.debugUserData = userData;
+        this.debugBegin = begin;
+        this.debugEnd = end;
     }
 
     private final HypervisorBreakPoint[] breakpoints;
-    private final Stack<ExceptionVisitor> visitorStack = new Stack<>();
+    private final Deque<ExceptionVisitor> visitorStack = new ArrayDeque<>();
 
     private int singleStep;
 
@@ -87,18 +101,20 @@ public class HypervisorBackend64 extends HypervisorBackend {
         if (thumb) {
             throw new IllegalStateException();
         }
-        for (HypervisorBreakPoint breakpoint : breakpoints) {
-            if (breakpoint != null && breakpoint.address == address) {
-                return breakpoint;
+        int freeSlot = -1;
+        for (int i = 0; i < breakpoints.length; i++) {
+            if (breakpoints[i] != null && breakpoints[i].getAddress() == address) {
+                return breakpoints[i];
+            }
+            if (freeSlot == -1 && breakpoints[i] == null) {
+                freeSlot = i;
             }
         }
-        for (int i = 0; i < breakpoints.length; i++) {
-            if (breakpoints[i] == null) {
-                HypervisorBreakPoint bp = new HypervisorBreakPoint(i, address, callback);
-                bp.install(hypervisor);
-                breakpoints[i] = bp;
-                return bp;
-            }
+        if (freeSlot != -1) {
+            HypervisorBreakPoint bp = new HypervisorBreakPoint(freeSlot, address, callback);
+            bp.install(hypervisor);
+            breakpoints[freeSlot] = bp;
+            return bp;
         }
         throw new UnsupportedOperationException("Max BKPs: " + breakpoints.length);
     }
@@ -106,7 +122,7 @@ public class HypervisorBackend64 extends HypervisorBackend {
     @Override
     public boolean removeBreakPoint(long address) {
         for (int i = 0; i < breakpoints.length; i++) {
-            if (breakpoints[i] != null && breakpoints[i].address == address) {
+            if (breakpoints[i] != null && breakpoints[i].getAddress() == address) {
                 breakpoints[i] = null;
                 hypervisor.disable_hw_breakpoint(i);
                 return true;
@@ -119,19 +135,12 @@ public class HypervisorBackend64 extends HypervisorBackend {
     public void handleUnknownException(int ec, long esr, long far, long virtualAddress) {
         switch (ec) {
             case EC_DATAABORT:
-                boolean isv = (esr & ARM_EL_ISV) != 0; // Instruction Syndrome Valid. Indicates whether the syndrome information in ISS[23:14] is valid.
+                boolean isv = (esr & ARM_EL_ISV) != 0;
                 boolean isWrite = ((esr >> 6) & 1) != 0;
-                int sas = (int) ((esr >> 22) & 3); // Syndrome Access Size. Indicates the size of the access attempted by the faulting operation.
+                int sas = (int) ((esr >> 22) & 3);
                 int accessSize = isv ? 1 << sas : 0;
-                int srt = (int) ((esr >> 16) & 0x1f); // Syndrome Register Transfer. The register number of the Wt/Xt/Rt operand of the faulting instruction.
-                /*
-                 * Width of the register accessed by the instruction is Sixty-Four.
-                 * 0b0	Instruction loads/stores a 32-bit wide register.
-                 * 0b1	Instruction loads/stores a 64-bit wide register.
-                 */
-                boolean sf = ((esr >> 15) & 1) != 0;
                 if (log.isDebugEnabled()) {
-                    log.debug("handleDataAbort srt={}, sf={}, accessSize={}", srt, sf, accessSize);
+                    log.debug("handleDataAbort isWrite={}, accessSize={}, virtualAddress=0x{}", isWrite, accessSize, Long.toHexString(virtualAddress));
                 }
                 if (eventMemHookNotifier != null) {
                     eventMemHookNotifier.notifyDataAbort(isWrite, accessSize, virtualAddress);
@@ -148,21 +157,23 @@ public class HypervisorBackend64 extends HypervisorBackend {
         }
     }
 
-    private long lastHitPointAddress;
+    private long lastHitPointAddress = -1;
 
     @Override
     public boolean handleException(long esr, long far, final long elr, long cpsr) {
         int ec = (int) ((esr >> 26) & 0x3f);
         if (log.isDebugEnabled()) {
-            log.debug("handleException syndrome=0x{}, far=0x{}, elr=0x{}, ec=0x{}, cpsr=0x{}", Long.toHexString(esr), Long.toHexString(far), Long.toHexString(elr), Integer.toHexString(ec), Long.toHexString(cpsr));
+            Number x0 = reg_read(Arm64Const.UC_ARM64_REG_X0);
+            log.debug("handleException syndrome=0x{}, far=0x{}, elr=0x{}, ec=0x{}, cpsr=0x{}, x0=0x{}", Long.toHexString(esr), Long.toHexString(far), Long.toHexString(elr), Integer.toHexString(ec), Long.toHexString(cpsr), Long.toHexString(x0.longValue()));
         }
         if (lastHitPointAddress != elr &&
-                (ec == EC_SOFTWARESTEP || ec == EC_BREAKPOINT)) {
+                (ec == EC_SOFTWARESTEP || ec == EC_BREAKPOINT || ec == EC_WATCHPOINT)) {
             while (!visitorStack.isEmpty()) {
                 if (visitorStack.pop().onException(hypervisor, ec, elr)) {
                     return true;
                 }
             }
+            lastHitPointAddress = -1;
         }
         switch (ec) {
             case EC_AA64_SVC: {
@@ -172,80 +183,91 @@ public class HypervisorBackend64 extends HypervisorBackend {
             }
             case EC_AA64_BKPT: {
                 int bkpt = (int) (esr & 0xffff);
-                interruptHookNotifier.notifyCallSVC(this, ARMEmulator.EXCP_BKPT, bkpt);
+                notifyInterruptHook(ARMEmulator.EXCP_BKPT, bkpt);
                 return true;
             }
-            case EC_SOFTWARESTEP: {
+            case EC_SOFTWARESTEP:
                 onSoftwareStep(esr, elr, cpsr);
                 return true;
-            }
-            case EC_BREAKPOINT: {
+            case EC_BREAKPOINT:
                 lastHitPointAddress = elr;
-                onBreakpoint(esr, elr);
-                for (int i = 0; i < breakpoints.length; i++) {
-                    HypervisorBreakPoint bp = breakpoints[i];
-                    if (bp != null && bp.address == elr) {
-                        hypervisor.disable_hw_breakpoint(i);
-                        visitorStack.push(ExceptionVisitor.breakRestorerVisitor(bp));
-                        step();
-                        break;
-                    }
-                }
+                handleBreakpoint(esr, elr);
                 return true;
-            }
-            case EC_WATCHPOINT: {
+            case EC_WATCHPOINT:
                 lastHitPointAddress = elr;
                 onWatchpoint(esr, far, elr);
                 return true;
-            }
-            case EC_DATAABORT: {
-                boolean isv = (esr & ARM_EL_ISV) != 0; // Instruction Syndrome Valid. Indicates whether the syndrome information in ISS[23:14] is valid.
-                boolean isWrite = ((esr >> 6) & 1) != 0;
-                boolean s1ptw = ((esr >> 7) & 1) != 0;
-                int sas = (int) ((esr >> 22) & 3);
-                int len = 1 << sas;
-                int srt = (int) ((esr >> 16) & 0x1f);
-                int dfsc = (int) (esr & 0x3f);
-                if (log.isDebugEnabled()) {
-                    log.debug("handle EC_DATAABORT isv={}, isWrite={}, s1ptw={}, len={}, srt={}, dfsc=0x{}, vaddr=0x{}", isv, isWrite, s1ptw, len, srt, Integer.toHexString(dfsc), Long.toHexString(far));
-                }
-                if (dfsc == 0x00 && emulator.getFamily() == Family.iOS) {
-                    int accessSize = isv ? 1 << sas : 0;
-                    return handleCommRead(far, elr, accessSize);
-                }
-                throw new UnsupportedOperationException("handleException ec=0x" + Integer.toHexString(ec) + ", dfsc=0x" + Integer.toHexString(dfsc));
-            }
-            case EC_SYSTEMREGISTERTRAP: {
-                /*
-                 *  Direction: Indicates the direction of the trapped instruction.
-                 *  0b0	Write access, including MSR instructions.
-                 *  0b1	Read access, including MRS instructions.
-                 */
-                boolean isRead = (esr & 1) != 0;
-                int CRm = (int) ((esr >>> 1) & 0xf);
-                int Rt = (int) ((esr >>> 5) & 0x1f); // The Rt value from the issued instruction, the general-purpose register used for the transfer.
-                int CRn = (int) ((esr >>> 10) & 0xf);
-                int Op1 = ((int) (esr >>> 14) & 0x7);
-                int Op2 = ((int) (esr >>> 17) & 0x7);
-                int Op0 = ((int) (esr >>> 20) & 0x3);
-                if (isRead) {
-                    if (CRm == 0 && CRn == 14 && Op1 == 3 && Op2 == 1 && Op0 == 3) { // CNTPCT_EL0
-                        hypervisor.reg_write64(Rt, 0);
-                        hypervisor.reg_set_elr_el1(elr + 4);
-                        return true;
-                    }
-                    if (CRm == 0 && CRn == 14 && Op1 == 3 && Op2 == 2 && Op0 == 3) { // CNTVCT_EL0
-                        hypervisor.reg_write64(Rt, 0);
-                        hypervisor.reg_set_elr_el1(elr + 4);
-                        return true;
-                    }
-                }
-                throw new UnsupportedOperationException("EC_SYSTEMREGISTERTRAP isRead=" + isRead + ", CRm=" + CRm + ", CRn=" + CRn + ", Op1=" + Op1 + ", Op2=" + Op2 + ", Op0=" + Op0);
-            }
+            case EC_INSNABORT:
+                return exclusiveMonitorEscaper instanceof CodeHookEscaper &&
+                        ((CodeHookEscaper) exclusiveMonitorEscaper).onInsnAbort();
+            case EC_DATAABORT:
+                return handleDataAbort(ec, esr, far, elr);
+            case EC_SYSTEMREGISTERTRAP:
+                return handleSystemRegisterTrap(esr, elr);
             default:
                 log.warn("handleException ec=0x{}", Integer.toHexString(ec));
                 throw new UnsupportedOperationException("handleException ec=0x" + Integer.toHexString(ec));
         }
+    }
+
+    private void handleBreakpoint(long esr, long elr) {
+        notifyDebugEvent(esr, elr);
+        for (int i = 0; i < breakpoints.length; i++) {
+            HypervisorBreakPoint bp = breakpoints[i];
+            if (bp != null && bp.getAddress() == elr) {
+                hypervisor.disable_hw_breakpoint(i);
+                visitorStack.push(ExceptionVisitor.breakRestorerVisitor(bp));
+                step();
+                break;
+            }
+        }
+    }
+
+    private boolean handleDataAbort(int ec, long esr, long far, long elr) {
+        boolean isv = (esr & ARM_EL_ISV) != 0;
+        boolean isWrite = ((esr >> 6) & 1) != 0;
+        int sas = (int) ((esr >> 22) & 3);
+        int dfsc = (int) (esr & 0x3f);
+        int accessSize = isv ? 1 << sas : 0;
+        if (log.isDebugEnabled()) {
+            boolean s1ptw = ((esr >> 7) & 1) != 0;
+            int len = 1 << sas;
+            int srt = (int) ((esr >> 16) & 0x1f);
+            log.debug("handle EC_DATAABORT ec=0x{}, isv={}, isWrite={}, s1ptw={}, len={}, srt={}, dfsc=0x{}, vaddr=0x{}, elr=0x{}", Integer.toHexString(ec), isv, isWrite, s1ptw, len, srt, Integer.toHexString(dfsc), Long.toHexString(far), Long.toHexString(elr));
+        }
+        if (dfsc == 0x00 && emulator.getFamily() == Family.iOS) {
+            return handleCommRead(far, elr, accessSize);
+        }
+        if (eventMemHookNotifier != null) {
+            eventMemHookNotifier.notifyDataAbort(isWrite, accessSize, far);
+        }
+        return false;
+    }
+
+    private boolean handleSystemRegisterTrap(long esr, long elr) {
+        /*
+         *  Direction: Indicates the direction of the trapped instruction.
+         *  0b0	Write access, including MSR instructions.
+         *  0b1	Read access, including MRS instructions.
+         */
+        boolean isRead = (esr & 1) != 0;
+        int CRm = (int) ((esr >>> 1) & 0xf);
+        int Rt = (int) ((esr >>> 5) & 0x1f);
+        int CRn = (int) ((esr >>> 10) & 0xf);
+        int Op1 = ((int) (esr >>> 14) & 0x7);
+        int Op2 = ((int) (esr >>> 17) & 0x7);
+        int Op0 = ((int) (esr >>> 20) & 0x3);
+        if (isRead) {
+            if (CRm == 0 && CRn == 14 && Op1 == 3 && Op0 == 3
+                    && (Op2 == 1 /* CNTPCT_EL0 */ || Op2 == 2 /* CNTVCT_EL0 */)) {
+                if (Rt < 31) {
+                    hypervisor.reg_write64(Rt, 0);
+                }
+                hypervisor.reg_set_elr_el1(elr + 4);
+                return true;
+            }
+        }
+        throw new UnsupportedOperationException("EC_SYSTEMREGISTERTRAP isRead=" + isRead + ", CRm=" + CRm + ", CRn=" + CRn + ", Op1=" + Op1 + ", Op2=" + Op2 + ", Op0=" + Op0);
     }
 
     private void step() {
@@ -257,118 +279,118 @@ public class HypervisorBackend64 extends HypervisorBackend {
 
     private final HypervisorWatchpoint[] watchpoints;
 
-    @Override
-    public void hook_add_new(ReadHook callback, long begin, long end, Object user_data) throws BackendException {
+    private void installWatchpoint(Object callback, long begin, long end, Object userData, boolean isWrite) {
+        int freeSlot = -1;
         for (int i = 0; i < watchpoints.length; i++) {
-            if (watchpoints[i] == null) {
-                HypervisorWatchpoint wp = new HypervisorWatchpoint(callback, begin, end, user_data, i, false);
-                wp.install(hypervisor);
-                watchpoints[i] = wp;
+            if (watchpoints[i] != null && watchpoints[i].matches(begin, end, isWrite)) {
                 return;
             }
+            if (freeSlot == -1 && watchpoints[i] == null) {
+                freeSlot = i;
+            }
+        }
+        if (freeSlot != -1) {
+            HypervisorWatchpoint wp = new HypervisorWatchpoint(callback, begin, end, userData, freeSlot, isWrite);
+            wp.install(hypervisor);
+            watchpoints[freeSlot] = wp;
+            return;
         }
         throw new UnsupportedOperationException("Max WRPs: " + watchpoints.length);
     }
 
     @Override
-    public void hook_add_new(WriteHook callback, long begin, long end, Object user_data) throws BackendException {
-        for (int i = 0; i < watchpoints.length; i++) {
-            if (watchpoints[i] == null) {
-                HypervisorWatchpoint wp = new HypervisorWatchpoint(callback, begin, end, user_data, i, true);
-                wp.install(hypervisor);
-                watchpoints[i] = wp;
-                return;
-            }
-        }
-        throw new UnsupportedOperationException("Max WRPs: " + watchpoints.length);
+    public void hook_add_new(ReadHook callback, long begin, long end, Object userData) throws BackendException {
+        installWatchpoint(callback, begin, end, userData, false);
     }
 
-    private long lastWatchpointAddress;
-    private long lastWatchpointDataAddress;
+    @Override
+    public void hook_add_new(WriteHook callback, long begin, long end, Object userData) throws BackendException {
+        installWatchpoint(callback, begin, end, userData, true);
+    }
+
+    private long lastWatchpointAddress = -1;
+    private long lastWatchpointDataAddress = -1;
+
+    private static boolean isLoadExclusiveCode(int asm) {
+        if ((asm & 0xbffffc00) == 0x885ffc00) { // ldaxr
+            return true;
+        }
+        if ((asm & 0xbffffc00) == 0x885f7c00) { // ldxr
+            return true;
+        }
+        if ((asm & 0xbfff8000) == 0x887f8000) { // ldaxp
+            return true;
+        }
+        if ((asm & 0xbfff8000) == 0x887f0000) { // ldxp
+            return true;
+        }
+        if ((asm & 0xfffffc00) == 0x485ffc00) { // ldaxrh
+            return true;
+        }
+        if ((asm & 0xfffffc00) == 0x485f7c00) { // ldxrh
+            return true;
+        }
+        if ((asm & 0xfffffc00) == 0x085ffc00) { // ldaxrb
+            return true;
+        }
+        return (asm & 0xfffffc00) == 0x085f7c00; // ldxrb
+    }
 
     private void onWatchpoint(long esr, long address, long elr) {
-        boolean repeatWatchpoint = lastWatchpointAddress == elr && lastWatchpointDataAddress == address;
+        Pointer pc = Objects.requireNonNull(UnidbgPointer.pointer(emulator, elr));
+        byte[] code = pc.getByteArray(0, 4);
+        boolean repeatWatchpoint = lastWatchpointAddress == elr
+                && lastWatchpointDataAddress == address
+                && isLoadExclusiveCode(pc.getInt(0));
         if (!repeatWatchpoint) {
             lastWatchpointAddress = elr;
             lastWatchpointDataAddress = address;
         }
         boolean write = ((esr >> 6) & 1) == 1;
         int status = (int) (esr & 0x3f);
-        /*
-         * Cache maintenance. Indicates whether the Watchpoint exception came from a cache maintenance or address translation instruction:
-         * 0b0	The Watchpoint exception was not generated by the execution of one of the System instructions identified in the description of value 1.
-         * 0b1	The Watchpoint exception was generated by either the execution of a cache maintenance instruction or by a synchronous Watchpoint exception on the execution of an address translation instruction. The DC ZVA, DC GVA, and DC GZVA instructions are not classified as a cache maintenance instructions, and therefore their execution cannot cause this field to be set to 1.
-         */
-        boolean cm = ((esr >> 8) & 1) == 1;
-        int wpt = (int) ((esr >> 18) & 0x3f); // Watchpoint number, 0 to 15 inclusive.
-        boolean wptv = ((esr >> 17) & 1) == 1; // The WPT field is valid, and holds the number of a watchpoint that triggered a Watchpoint exception.
         if (log.isDebugEnabled()) {
+            boolean cm = ((esr >> 8) & 1) == 1;
+            int wpt = (int) ((esr >> 18) & 0x3f);
+            boolean wptv = ((esr >> 17) & 1) == 1;
             log.debug("onWatchpoint write={}, address=0x{}, cm={}, wpt={}, wptv={}, status=0x{}", write, Long.toHexString(address), cm, wpt, wptv, Integer.toHexString(status));
         }
+        Instruction insn = createDisassembler().disasm(code, elr, 1)[0];
+        int accessSize = write ? MEMORY_SIZE_DETECTOR.detectWriteSize(insn) : MEMORY_SIZE_DETECTOR.detectReadSize(insn);
         HypervisorWatchpoint hitWp = null;
-        for (int n = 0; n < watchpoints.length; n++) {
-            HypervisorWatchpoint watchpoint = watchpoints[n];
-            if (watchpoint != null && watchpoint.contains(address, write)) {
+        for (HypervisorWatchpoint watchpoint : watchpoints) {
+            if (watchpoint != null && watchpoint.contains(address, accessSize, write)) {
                 hitWp = watchpoint;
-                if (repeatWatchpoint) {
-                    break;
-                }
-                Pointer pc = UnidbgPointer.pointer(emulator, elr);
-                assert pc != null;
-                byte[] code = pc.getByteArray(0, 4);
-                if (watchpoint.onHit(this, address, write, createDisassembler(), code, elr)) {
-                    hypervisor.disable_watchpoint(n);
-                    visitorStack.push(ExceptionVisitor.breakRestorerVisitor(watchpoint));
-                    step();
-                    return;
-                }
+                break;
             }
         }
         if (hitWp == null) {
-            interruptHookNotifier.notifyCallSVC(this, ARMEmulator.EXCP_BKPT, status);
-        } else {
-            if (repeatWatchpoint) {
-                if (exclusiveMonitorEscaper != null) {
-                    interruptHookNotifier.notifyCallSVC(this, ARMEmulator.EXCP_BKPT, status);
-                } else {
-                    exclusiveMonitorEscaper = new ExclusiveMonitorEscaper(new WatchpointExclusiveMonitorEscaper(hitWp));
-                }
+            notifyInterruptHook(ARMEmulator.EXCP_BKPT, status);
+        } else if (repeatWatchpoint) {
+            if (exclusiveMonitorEscaper != null) {
+                notifyInterruptHook(ARMEmulator.EXCP_BKPT, status);
             } else {
-                hypervisor.disable_watchpoint(hitWp.n);
-                visitorStack.push(ExceptionVisitor.breakRestorerVisitor(hitWp));
+                exclusiveMonitorEscaper = new WatchpointEscaper(hitWp);
                 step();
             }
+        } else {
+            hitWp.onHit(this, address, accessSize, write, insn);
+            hypervisor.disable_watchpoint(hitWp.getSlot());
+            visitorStack.push(ExceptionVisitor.breakRestorerVisitor(hitWp));
+            step();
         }
     }
 
-    private class WatchpointExclusiveMonitorEscaper implements ExclusiveMonitorCallback {
-        private final HypervisorWatchpoint wp;
-        WatchpointExclusiveMonitorEscaper(HypervisorWatchpoint wp) {
-            this.wp = wp;
-            hypervisor.disable_watchpoint(wp.n);
-        }
-        @Override
-        public void notifyCallback(long address) {
-        }
-        @Override
-        public void onEscapeSuccess() {
-            wp.install(hypervisor);
-            exclusiveMonitorEscaper = null;
-        }
+    private boolean isInDebugRange(long address) {
+        return debugBegin >= debugEnd || (address >= debugBegin && address < debugEnd);
     }
 
-    private void onBreakpoint(long esr, long elr) {
-        if (debugCallback != null) {
-            debugCallback.onBreak(this, elr, INS_SIZE, debugUserData);
+    private void notifyDebugEvent(long esr, long address) {
+        if (debugCallback != null && isInDebugRange(address)) {
+            debugCallback.onBreak(this, address, INS_SIZE, debugUserData);
         } else {
             int status = (int) (esr & 0x3f);
-            interruptHookNotifier.notifyCallSVC(this, ARMEmulator.EXCP_BKPT, status);
+            notifyInterruptHook(ARMEmulator.EXCP_BKPT, status);
         }
-    }
-
-    private interface ExclusiveMonitorCallback {
-        void notifyCallback(long address);
-        void onEscapeSuccess();
     }
 
     /**
@@ -382,31 +404,14 @@ public class HypervisorBackend64 extends HypervisorBackend {
      * Changing exception level also clears the exclusive monitor, so taking
      * single-step exception between a LDAXR/STXR pair means the loop has to be retried.
      */
-    private class ExclusiveMonitorEscaper {
-        private final ExclusiveMonitorCallback callback;
-        ExclusiveMonitorEscaper(ExclusiveMonitorCallback callback) {
-            this.callback = callback;
-            step();
-        }
-        private long loadExclusiveAddress;
+    private abstract class ExclusiveMonitorEscaper {
+        private long loadExclusiveAddress = -1;
         private int loadExclusiveCount;
-        private final List<Long> exclusiveRegionAddressList = new ArrayList<>();
+        private final Set<Long> exclusiveRegionAddressList = new LinkedHashSet<>();
         private void resetRegionInfo() {
-            loadExclusiveAddress = 0;
+            loadExclusiveAddress = -1;
             loadExclusiveCount = 0;
             exclusiveRegionAddressList.clear();
-        }
-        private boolean isLoadExclusiveCode(int asm) {
-            if ((asm & 0xbffffc00) == 0x885ffc00) { // ldaxr
-                return true;
-            }
-            if ((asm & 0xfffffc00) == 0x485ffc00) { // ldaxrh
-                return true;
-            }
-            if ((asm & 0xfffffc00) == 0x485f7c00) { // 0x40808dbc: ldxrh w5, [x1]
-                return true;
-            }
-            return (asm & 0xbffffc00) == 0x885f7c00; // ldxr
         }
         final void onSoftwareStep(long spsr, long address) {
             UnidbgPointer pointer = UnidbgPointer.pointer(emulator, address);
@@ -414,7 +419,21 @@ public class HypervisorBackend64 extends HypervisorBackend {
                 hypervisor.reg_set_spsr_el1(spsr | Hypervisor.PSTATE$SS);
                 return;
             }
-            int asm = pointer.getInt(0);
+            updateExclusiveDetection(pointer.getInt(0), address);
+            if (loadExclusiveCount >= 4 && address == loadExclusiveAddress) {
+                if (tryEscapeExclusiveLoop(spsr, address)) {
+                    return;
+                }
+            }
+            if (shouldAbandonEscape()) {
+                onEscapeSuccess();
+                return;
+            }
+            if (notifyCallback(address)) {
+                hypervisor.reg_set_spsr_el1(spsr | Hypervisor.PSTATE$SS);
+            }
+        }
+        private void updateExclusiveDetection(int asm, long address) {
             if (isLoadExclusiveCode(asm)) {
                 if (loadExclusiveAddress == address) {
                     loadExclusiveCount++;
@@ -423,93 +442,228 @@ public class HypervisorBackend64 extends HypervisorBackend {
                 }
                 loadExclusiveAddress = address;
             } else {
-                if (loadExclusiveAddress == 0) {
+                if (loadExclusiveAddress == -1) {
                     resetRegionInfo();
                 }
             }
-            if (loadExclusiveCount >= 2 && !exclusiveRegionAddressList.contains(address)) {
+            if (loadExclusiveCount >= 2) {
                 exclusiveRegionAddressList.add(address);
             }
-            if (loadExclusiveCount >= 4 && address == loadExclusiveAddress) {
-                long foundAddress = 0;
-                StringBuilder builder = new StringBuilder();
-                for (long pc : exclusiveRegionAddressList) {
-                    Pointer ptr = UnidbgPointer.pointer(emulator, pc);
-                    assert ptr != null;
-                    byte[] code = ptr.getByteArray(0, 4);
-                    Instruction instruction = createDisassembler().disasm(code, pc, 1)[0];
-                    switch (instruction.getMnemonic()) {
-                        case "stxr":
-                        case "stlxr":
-                        case "stxrh":
-                        case "stlxrh":
-                            foundAddress = pc;
-                            break;
-                    }
-                    builder.append(String.format("0x%x: %s%n", instruction.getAddress(), instruction));
-                }
-                if (foundAddress == 0) {
-                    log.info("CodeHookNotifier.onSoftwareStep: \n{}", builder);
-                } else {
-                    resetRegionInfo();
-                    final long breakAddress = foundAddress + 4;
-                    for (int i = 0; i < breakpoints.length; i++) {
-                        if (breakpoints[i] == null) {
-                            final int n = i;
-                            visitorStack.push(new ExceptionVisitor() {
-                                @Override
-                                public boolean onException(Hypervisor hypervisor, int ec, long address) {
-                                    if (ec == EC_BREAKPOINT) {
-                                        callback.notifyCallback(address);
-                                    }
-                                    breakpoints[n] = null;
-                                    hypervisor.disable_hw_breakpoint(n);
-                                    callback.onEscapeSuccess();
-                                    step();
-                                    return true;
-                                }
-                            });
-                            callback.notifyCallback(address);
-                            HypervisorBreakPoint bp = new HypervisorBreakPoint(n, breakAddress, null);
-                            bp.install(hypervisor);
-                            breakpoints[n] = bp;
-                            hypervisor.enable_single_step(false);
-                            hypervisor.reg_set_spsr_el1(spsr | Hypervisor.PSTATE$SS);
-                            return;
-                        }
-                    }
-                    log.warn("No more BKPs: {}", breakpoints.length);
+        }
+        private boolean tryEscapeExclusiveLoop(long spsr, long address) {
+            long foundAddress = 0;
+            for (long pc : exclusiveRegionAddressList) {
+                Pointer ptr = Objects.requireNonNull(UnidbgPointer.pointer(emulator, pc));
+                byte[] code = ptr.getByteArray(0, 4);
+                Instruction instruction = createDisassembler().disasm(code, pc, 1)[0];
+                switch (instruction.getMnemonic()) {
+                    case "stxr":
+                    case "stlxr":
+                    case "stxp":
+                    case "stlxp":
+                    case "stxrh":
+                    case "stlxrh":
+                    case "stxrb":
+                    case "stlxrb":
+                        foundAddress = pc;
+                        break;
                 }
             }
-            callback.notifyCallback(address);
-            hypervisor.reg_set_spsr_el1(spsr | Hypervisor.PSTATE$SS);
+            if (foundAddress == 0) {
+                if (log.isWarnEnabled()) {
+                    StringBuilder builder = new StringBuilder();
+                    for (long pc : exclusiveRegionAddressList) {
+                        Pointer ptr = Objects.requireNonNull(UnidbgPointer.pointer(emulator, pc));
+                        byte[] code = ptr.getByteArray(0, 4);
+                        Instruction instruction = createDisassembler().disasm(code, pc, 1)[0];
+                        builder.append(String.format("0x%x: %s%n", instruction.getAddress(), instruction));
+                    }
+                    log.warn("No store-exclusive found in exclusive region, skipping escape: \n{}", builder);
+                }
+                resetRegionInfo();
+                return false;
+            }
+            resetRegionInfo();
+            final long breakAddress = foundAddress + 4;
+            for (int i = 0; i < breakpoints.length; i++) {
+                if (breakpoints[i] == null) {
+                    final int n = i;
+                    visitorStack.push(new ExceptionVisitor() {
+                        @Override
+                        public boolean onException(Hypervisor hypervisor, int ec, long address) {
+                            if (ec == EC_BREAKPOINT) {
+                                notifyCallback(address);
+                            }
+                            breakpoints[n] = null;
+                            hypervisor.disable_hw_breakpoint(n);
+                            onEscapeSuccess();
+                            return true;
+                        }
+                    });
+                    notifyCallback(address);
+                    HypervisorBreakPoint bp = new HypervisorBreakPoint(n, breakAddress, null);
+                    bp.install(hypervisor);
+                    breakpoints[n] = bp;
+                    hypervisor.enable_single_step(false);
+                    hypervisor.reg_set_spsr_el1(spsr | Hypervisor.PSTATE$SS);
+                    return true;
+                }
+            }
+            log.warn("No free breakpoint slot for exclusive monitor escape, max BKPs: {}", breakpoints.length);
+            resetRegionInfo();
+            return false;
         }
+        /**
+         * @return true to continue single-stepping, false to fast-forward (skip PSTATE.SS)
+         */
+        abstract boolean notifyCallback(long address);
+        abstract void onEscapeSuccess();
+        boolean shouldAbandonEscape() { return false; }
     }
 
-    private class CodeHookNotifier implements UnHook, ExclusiveMonitorCallback {
+    private class CodeHookEscaper extends ExclusiveMonitorEscaper implements UnHook {
         private final CodeHook callback;
         private final long begin;
         private final long end;
         private final Object user;
-        public CodeHookNotifier(CodeHook callback, long begin, long end, Object user) {
+        private int reentrySlot = -1;
+        private Map<Long, Integer> savedPagePerms;
+        CodeHookEscaper(CodeHook callback, long begin, long end, Object user) {
             this.callback = callback;
             this.begin = begin;
             this.end = end;
             this.user = user;
         }
+        private boolean isInRange(long address) {
+            return begin >= end || (address >= begin && address < end);
+        }
         @Override
-        public void onEscapeSuccess() {
+        void onEscapeSuccess() {
             step();
         }
         @Override
-        public void notifyCallback(long address) {
-            if (begin >= end ||
-                    (address >= begin && address < end)) {
+        boolean notifyCallback(long address) {
+            if (isInRange(address)) {
                 callback.hook(HypervisorBackend64.this, address, 4, user);
+                return true;
+            }
+            return !tryFastForward();
+        }
+        private boolean tryFastForward() {
+            if (begin >= end) {
+                return false;
+            }
+            long lr = reg_read(Arm64Const.UC_ARM64_REG_LR).longValue();
+            if (lr >= begin && lr < end) {
+                return tryFastForwardToAddress(lr);
+            }
+            if (tryFastForwardWithPageProtection()) {
+                return true;
+            }
+            return tryFastForwardToAddress(begin);
+        }
+        private boolean tryFastForwardToAddress(long target) {
+            for (int i = 0; i < breakpoints.length; i++) {
+                if (breakpoints[i] == null) {
+                    final int n = i;
+                    reentrySlot = n;
+                    visitorStack.push(new ExceptionVisitor() {
+                        @Override
+                        public boolean onException(Hypervisor hypervisor, int ec, long address) {
+                            breakpoints[n] = null;
+                            hypervisor.disable_hw_breakpoint(n);
+                            reentrySlot = -1;
+                            step();
+                            return ec == EC_BREAKPOINT;
+                        }
+                    });
+                    HypervisorBreakPoint bp = new HypervisorBreakPoint(n, target, null);
+                    bp.install(hypervisor);
+                    breakpoints[n] = bp;
+                    hypervisor.enable_single_step(false);
+                    return true;
+                }
+            }
+            return false;
+        }
+        private boolean tryFastForwardWithPageProtection() {
+            int ps = getPageSize();
+            long pageMask = ps - 1L;
+            long interiorBegin = (begin + pageMask) & ~pageMask;
+            long interiorEnd = end & ~pageMask;
+            if (interiorBegin >= interiorEnd) {
+                return false;
+            }
+            Map<Long, Integer> permsMap = new LinkedHashMap<>();
+            for (long addr = interiorBegin; addr < interiorEnd; addr += ps) {
+                int perms = hypervisor.get_page_perms(addr);
+                if (perms < 0 || (perms & UnicornConst.UC_PROT_EXEC) == 0) {
+                    continue;
+                }
+                permsMap.put(addr, perms);
+            }
+            if (permsMap.isEmpty()) {
+                return false;
+            }
+            savedPagePerms = permsMap;
+            for (Map.Entry<Long, Integer> entry : permsMap.entrySet()) {
+                hypervisor.mem_protect(entry.getKey(), ps, entry.getValue() & ~UnicornConst.UC_PROT_EXEC);
+            }
+            hypervisor.enable_single_step(false);
+            return true;
+        }
+        boolean onInsnAbort() {
+            if (savedPagePerms == null || savedPagePerms.isEmpty()) {
+                return false;
+            }
+            restorePageProtection();
+            step();
+            return true;
+        }
+        private void restorePageProtection() {
+            if (savedPagePerms != null) {
+                int ps = getPageSize();
+                for (Map.Entry<Long, Integer> entry : savedPagePerms.entrySet()) {
+                    hypervisor.mem_protect(entry.getKey(), ps, entry.getValue());
+                }
+                savedPagePerms = null;
             }
         }
         @Override
         public void unhook() {
+            if (reentrySlot >= 0) {
+                breakpoints[reentrySlot] = null;
+                hypervisor.disable_hw_breakpoint(reentrySlot);
+                reentrySlot = -1;
+            }
+            restorePageProtection();
+            exclusiveMonitorEscaper = null;
+            hypervisor.enable_single_step(false);
+        }
+    }
+
+    private class WatchpointEscaper extends ExclusiveMonitorEscaper {
+        private final HypervisorWatchpoint wp;
+        private int stepCount;
+        private static final int MAX_ESCAPE_STEPS = 200;
+        WatchpointEscaper(HypervisorWatchpoint wp) {
+            this.wp = wp;
+            hypervisor.disable_watchpoint(wp.getSlot());
+        }
+        @Override
+        boolean notifyCallback(long address) {
+            return true;
+        }
+        @Override
+        boolean shouldAbandonEscape() {
+            return ++stepCount > MAX_ESCAPE_STEPS;
+        }
+        @Override
+        void onEscapeSuccess() {
+            hypervisor.enable_single_step(false);
+            wp.install(hypervisor);
+            lastWatchpointAddress = -1;
+            lastWatchpointDataAddress = -1;
             exclusiveMonitorEscaper = null;
         }
     }
@@ -517,13 +671,14 @@ public class HypervisorBackend64 extends HypervisorBackend {
     private ExclusiveMonitorEscaper exclusiveMonitorEscaper;
 
     @Override
-    public void hook_add_new(CodeHook callback, long begin, long end, Object user_data) throws BackendException {
+    public void hook_add_new(CodeHook callback, long begin, long end, Object userData) throws BackendException {
         if (exclusiveMonitorEscaper != null) {
             throw new IllegalStateException();
         }
-        CodeHookNotifier codeHookNotifier = new CodeHookNotifier(callback, begin, end, user_data);
-        this.exclusiveMonitorEscaper = new ExclusiveMonitorEscaper(codeHookNotifier);
-        callback.onAttach(codeHookNotifier);
+        CodeHookEscaper escaper = new CodeHookEscaper(callback, begin, end, userData);
+        this.exclusiveMonitorEscaper = escaper;
+        step();
+        callback.onAttach(escaper);
     }
 
     private void onSoftwareStep(long esr, long address, long spsr) {
@@ -537,22 +692,15 @@ public class HypervisorBackend64 extends HypervisorBackend {
             return;
         }
         if (--singleStep == 0) {
-            if (debugCallback != null) {
-                debugCallback.onBreak(this, address, INS_SIZE, debugUserData);
-            } else {
-                int status = (int) (esr & 0x3f);
-                interruptHookNotifier.notifyCallSVC(this, ARMEmulator.EXCP_BKPT, status);
-            }
+            hypervisor.enable_single_step(false);
+            notifyDebugEvent(esr, address);
         } else {
             hypervisor.reg_set_spsr_el1(spsr | Hypervisor.PSTATE$SS);
         }
     }
 
     private boolean handleCommRead(long vaddr, long elr, int accessSize) {
-        Pointer pointer = UnidbgPointer.pointer(emulator, vaddr);
-        assert pointer != null;
-        Pointer pc = UnidbgPointer.pointer(emulator, elr);
-        assert pc != null;
+        Pointer pc = Objects.requireNonNull(UnidbgPointer.pointer(emulator, elr));
         byte[] code = pc.getByteArray(0, 4);
         Instruction insn = createDisassembler().disasm(code, elr, 1)[0];
         if (log.isDebugEnabled()) {
@@ -568,47 +716,36 @@ public class HypervisorBackend64 extends HypervisorBackend {
         Operand[] op = opInfo.getOperands();
         int offset = (int) (vaddr - _COMM_PAGE64_BASE_ADDRESS);
         switch (offset) {
-            case 0x38: // uint64_t max memory size */
+            case 0x38: // uint64_t max memory size
             case 0x40:
-            case 0x58: {
-                Operand operand = op[0];
-                OpValue value = operand.getValue();
-                reg_write(insn.mapToUnicornReg(value.getReg()), 0x0L);
-                hypervisor.reg_set_elr_el1(elr + 4);
-                return true;
-            }
             case 0x48:
             case 0x4c:
             case 0x50:
+            case 0x58:
             case 0x60:
             case 0x64:
-            case 0x90: {
-                Operand operand = op[0];
-                OpValue value = operand.getValue();
-                reg_write(insn.mapToUnicornReg(value.getReg()), 0x0);
-                hypervisor.reg_set_elr_el1(elr + 4);
-                return true;
-            }
+            case 0x90:
+                return emulateCommPageLdr(insn, op, elr, 0);
             case 0x22: // uint8_t number of configured CPUs
             case 0x34: // uint8_t number of active CPUs (hw.activecpu)
             case 0x35: // uint8_t number of physical CPUs (hw.physicalcpu_max)
-            case 0x36: { // uint8_t number of logical CPUs (hw.logicalcpu_max)
-                Operand operand = op[0];
-                OpValue value = operand.getValue();
-                reg_write(insn.mapToUnicornReg(value.getReg()), 1);
-                hypervisor.reg_set_elr_el1(elr + 4);
-                return true;
-            }
+            case 0x36: // uint8_t number of logical CPUs (hw.logicalcpu_max)
+                return emulateCommPageLdr(insn, op, elr, 1);
             default:
                 throw new UnsupportedOperationException("vaddr=0x" + Long.toHexString(vaddr) + ", offset=0x" + Long.toHexString(offset));
         }
     }
 
+    private boolean emulateCommPageLdr(Instruction insn, Operand[] op, long elr, Number val) {
+        OpValue value = op[0].getValue();
+        reg_write(insn.mapToUnicornReg(value.getReg()), val);
+        hypervisor.reg_set_elr_el1(elr + 4);
+        return true;
+    }
+
     @Override
     public void enableVFP() {
-        long value = reg_read(Arm64Const.UC_ARM64_REG_CPACR_EL1).longValue();
-        value |= 0x300000; // set the FPEN bits
-        reg_write(Arm64Const.UC_ARM64_REG_CPACR_EL1, value);
+        enableVFP(true);
     }
 
     @Override
@@ -618,94 +755,36 @@ public class HypervisorBackend64 extends HypervisorBackend {
     @Override
     public void reg_write(int regId, Number value) throws BackendException {
         try {
-            switch (regId) {
-                case Arm64Const.UC_ARM64_REG_X0:
-                case Arm64Const.UC_ARM64_REG_X1:
-                case Arm64Const.UC_ARM64_REG_X2:
-                case Arm64Const.UC_ARM64_REG_X3:
-                case Arm64Const.UC_ARM64_REG_X4:
-                case Arm64Const.UC_ARM64_REG_X5:
-                case Arm64Const.UC_ARM64_REG_X6:
-                case Arm64Const.UC_ARM64_REG_X7:
-                case Arm64Const.UC_ARM64_REG_X8:
-                case Arm64Const.UC_ARM64_REG_X9:
-                case Arm64Const.UC_ARM64_REG_X10:
-                case Arm64Const.UC_ARM64_REG_X11:
-                case Arm64Const.UC_ARM64_REG_X12:
-                case Arm64Const.UC_ARM64_REG_X13:
-                case Arm64Const.UC_ARM64_REG_X14:
-                case Arm64Const.UC_ARM64_REG_X15:
-                case Arm64Const.UC_ARM64_REG_X16:
-                case Arm64Const.UC_ARM64_REG_X17:
-                case Arm64Const.UC_ARM64_REG_X18:
-                case Arm64Const.UC_ARM64_REG_X19:
-                case Arm64Const.UC_ARM64_REG_X20:
-                case Arm64Const.UC_ARM64_REG_X21:
-                case Arm64Const.UC_ARM64_REG_X22:
-                case Arm64Const.UC_ARM64_REG_X23:
-                case Arm64Const.UC_ARM64_REG_X24:
-                case Arm64Const.UC_ARM64_REG_X25:
-                case Arm64Const.UC_ARM64_REG_X26:
-                case Arm64Const.UC_ARM64_REG_X27:
-                case Arm64Const.UC_ARM64_REG_X28:
-                    hypervisor.reg_write64(regId - Arm64Const.UC_ARM64_REG_X0, value.longValue());
-                    break;
-                case Arm64Const.UC_ARM64_REG_W0:
-                case Arm64Const.UC_ARM64_REG_W1:
-                case Arm64Const.UC_ARM64_REG_W2:
-                case Arm64Const.UC_ARM64_REG_W3:
-                case Arm64Const.UC_ARM64_REG_W4:
-                case Arm64Const.UC_ARM64_REG_W5:
-                case Arm64Const.UC_ARM64_REG_W6:
-                case Arm64Const.UC_ARM64_REG_W7:
-                case Arm64Const.UC_ARM64_REG_W8:
-                case Arm64Const.UC_ARM64_REG_W9:
-                case Arm64Const.UC_ARM64_REG_W10:
-                case Arm64Const.UC_ARM64_REG_W11:
-                case Arm64Const.UC_ARM64_REG_W12:
-                case Arm64Const.UC_ARM64_REG_W13:
-                case Arm64Const.UC_ARM64_REG_W14:
-                case Arm64Const.UC_ARM64_REG_W15:
-                case Arm64Const.UC_ARM64_REG_W16:
-                case Arm64Const.UC_ARM64_REG_W17:
-                case Arm64Const.UC_ARM64_REG_W18:
-                case Arm64Const.UC_ARM64_REG_W19:
-                case Arm64Const.UC_ARM64_REG_W20:
-                case Arm64Const.UC_ARM64_REG_W21:
-                case Arm64Const.UC_ARM64_REG_W22:
-                case Arm64Const.UC_ARM64_REG_W23:
-                case Arm64Const.UC_ARM64_REG_W24:
-                case Arm64Const.UC_ARM64_REG_W25:
-                case Arm64Const.UC_ARM64_REG_W26:
-                case Arm64Const.UC_ARM64_REG_W27:
-                case Arm64Const.UC_ARM64_REG_W28:
-                case Arm64Const.UC_ARM64_REG_W29:
-                case Arm64Const.UC_ARM64_REG_W30:
-                    hypervisor.reg_write64(regId - Arm64Const.UC_ARM64_REG_W0, value.longValue());
-                    break;
-                case Arm64Const.UC_ARM64_REG_SP:
-                    hypervisor.reg_set_sp64(value.longValue());
-                    break;
-                case Arm64Const.UC_ARM64_REG_X29:
-                    hypervisor.reg_write64(29, value.longValue());
-                    break;
-                case Arm64Const.UC_ARM64_REG_LR:
-                    hypervisor.reg_write64(30, value.longValue());
-                    break;
-                case Arm64Const.UC_ARM64_REG_TPIDR_EL0:
-                    hypervisor.reg_set_tpidr_el0(value.longValue());
-                    break;
-                case Arm64Const.UC_ARM64_REG_TPIDRRO_EL0:
-                    hypervisor.reg_set_tpidrro_el0(value.longValue());
-                    break;
-                case Arm64Const.UC_ARM64_REG_NZCV:
-                    hypervisor.reg_set_nzcv(value.longValue());
-                    break;
-                case Arm64Const.UC_ARM64_REG_CPACR_EL1:
-                    hypervisor.reg_set_cpacr_el1(value.longValue());
-                    break;
-                default:
-                    throw new HypervisorException("regId=" + regId);
+            if (regId >= Arm64Const.UC_ARM64_REG_X0 && regId <= Arm64Const.UC_ARM64_REG_X28) {
+                hypervisor.reg_write64(regId - Arm64Const.UC_ARM64_REG_X0, value.longValue());
+            } else if (regId >= Arm64Const.UC_ARM64_REG_W0 && regId <= Arm64Const.UC_ARM64_REG_W30) {
+                hypervisor.reg_write64(regId - Arm64Const.UC_ARM64_REG_W0, value.longValue() & 0xFFFFFFFFL);
+            } else {
+                switch (regId) {
+                    case Arm64Const.UC_ARM64_REG_SP:
+                        hypervisor.reg_set_sp64(value.longValue());
+                        break;
+                    case Arm64Const.UC_ARM64_REG_X29:
+                        hypervisor.reg_write64(29, value.longValue());
+                        break;
+                    case Arm64Const.UC_ARM64_REG_LR:
+                        hypervisor.reg_write64(30, value.longValue());
+                        break;
+                    case Arm64Const.UC_ARM64_REG_TPIDR_EL0:
+                        hypervisor.reg_set_tpidr_el0(value.longValue());
+                        break;
+                    case Arm64Const.UC_ARM64_REG_TPIDRRO_EL0:
+                        hypervisor.reg_set_tpidrro_el0(value.longValue());
+                        break;
+                    case Arm64Const.UC_ARM64_REG_NZCV:
+                        hypervisor.reg_set_nzcv(value.longValue());
+                        break;
+                    case Arm64Const.UC_ARM64_REG_CPACR_EL1:
+                        hypervisor.reg_set_cpacr_el1(value.longValue());
+                        break;
+                    default:
+                        throw new HypervisorException("regId=" + regId);
+                }
             }
         } catch (HypervisorException e) {
             throw new BackendException(e);
@@ -715,83 +794,27 @@ public class HypervisorBackend64 extends HypervisorBackend {
     @Override
     public Number reg_read(int regId) throws BackendException {
         try {
-            switch (regId) {
-                case Arm64Const.UC_ARM64_REG_X0:
-                case Arm64Const.UC_ARM64_REG_X1:
-                case Arm64Const.UC_ARM64_REG_X2:
-                case Arm64Const.UC_ARM64_REG_X3:
-                case Arm64Const.UC_ARM64_REG_X4:
-                case Arm64Const.UC_ARM64_REG_X5:
-                case Arm64Const.UC_ARM64_REG_X6:
-                case Arm64Const.UC_ARM64_REG_X7:
-                case Arm64Const.UC_ARM64_REG_X8:
-                case Arm64Const.UC_ARM64_REG_X9:
-                case Arm64Const.UC_ARM64_REG_X10:
-                case Arm64Const.UC_ARM64_REG_X11:
-                case Arm64Const.UC_ARM64_REG_X12:
-                case Arm64Const.UC_ARM64_REG_X13:
-                case Arm64Const.UC_ARM64_REG_X14:
-                case Arm64Const.UC_ARM64_REG_X15:
-                case Arm64Const.UC_ARM64_REG_X16:
-                case Arm64Const.UC_ARM64_REG_X17:
-                case Arm64Const.UC_ARM64_REG_X18:
-                case Arm64Const.UC_ARM64_REG_X19:
-                case Arm64Const.UC_ARM64_REG_X20:
-                case Arm64Const.UC_ARM64_REG_X21:
-                case Arm64Const.UC_ARM64_REG_X22:
-                case Arm64Const.UC_ARM64_REG_X23:
-                case Arm64Const.UC_ARM64_REG_X24:
-                case Arm64Const.UC_ARM64_REG_X25:
-                case Arm64Const.UC_ARM64_REG_X26:
-                case Arm64Const.UC_ARM64_REG_X27:
-                case Arm64Const.UC_ARM64_REG_X28:
-                    return hypervisor.reg_read64(regId - Arm64Const.UC_ARM64_REG_X0);
-                case Arm64Const.UC_ARM64_REG_W0:
-                case Arm64Const.UC_ARM64_REG_W1:
-                case Arm64Const.UC_ARM64_REG_W2:
-                case Arm64Const.UC_ARM64_REG_W3:
-                case Arm64Const.UC_ARM64_REG_W4:
-                case Arm64Const.UC_ARM64_REG_W5:
-                case Arm64Const.UC_ARM64_REG_W6:
-                case Arm64Const.UC_ARM64_REG_W7:
-                case Arm64Const.UC_ARM64_REG_W8:
-                case Arm64Const.UC_ARM64_REG_W9:
-                case Arm64Const.UC_ARM64_REG_W10:
-                case Arm64Const.UC_ARM64_REG_W11:
-                case Arm64Const.UC_ARM64_REG_W12:
-                case Arm64Const.UC_ARM64_REG_W13:
-                case Arm64Const.UC_ARM64_REG_W14:
-                case Arm64Const.UC_ARM64_REG_W15:
-                case Arm64Const.UC_ARM64_REG_W16:
-                case Arm64Const.UC_ARM64_REG_W17:
-                case Arm64Const.UC_ARM64_REG_W18:
-                case Arm64Const.UC_ARM64_REG_W19:
-                case Arm64Const.UC_ARM64_REG_W20:
-                case Arm64Const.UC_ARM64_REG_W21:
-                case Arm64Const.UC_ARM64_REG_W22:
-                case Arm64Const.UC_ARM64_REG_W23:
-                case Arm64Const.UC_ARM64_REG_W24:
-                case Arm64Const.UC_ARM64_REG_W25:
-                case Arm64Const.UC_ARM64_REG_W26:
-                case Arm64Const.UC_ARM64_REG_W27:
-                case Arm64Const.UC_ARM64_REG_W28:
-                case Arm64Const.UC_ARM64_REG_W29:
-                case Arm64Const.UC_ARM64_REG_W30:
-                    return (int) (hypervisor.reg_read64(regId - Arm64Const.UC_ARM64_REG_W0) & 0xffffffffL);
-                case Arm64Const.UC_ARM64_REG_SP:
-                    return hypervisor.reg_read_sp64();
-                case Arm64Const.UC_ARM64_REG_X29:
-                    return hypervisor.reg_read64(29);
-                case Arm64Const.UC_ARM64_REG_LR:
-                    return hypervisor.reg_read64(30);
-                case Arm64Const.UC_ARM64_REG_PC:
-                    return hypervisor.reg_read_pc64();
-                case Arm64Const.UC_ARM64_REG_NZCV:
-                    return hypervisor.reg_read_nzcv();
-                case Arm64Const.UC_ARM64_REG_CPACR_EL1:
-                    return hypervisor.reg_read_cpacr_el1();
-                default:
-                    throw new HypervisorException("regId=" + regId);
+            if (regId >= Arm64Const.UC_ARM64_REG_X0 && regId <= Arm64Const.UC_ARM64_REG_X28) {
+                return hypervisor.reg_read64(regId - Arm64Const.UC_ARM64_REG_X0);
+            } else if (regId >= Arm64Const.UC_ARM64_REG_W0 && regId <= Arm64Const.UC_ARM64_REG_W30) {
+                return hypervisor.reg_read64(regId - Arm64Const.UC_ARM64_REG_W0) & 0xffffffffL;
+            } else {
+                switch (regId) {
+                    case Arm64Const.UC_ARM64_REG_SP:
+                        return hypervisor.reg_read_sp64();
+                    case Arm64Const.UC_ARM64_REG_X29:
+                        return hypervisor.reg_read64(29);
+                    case Arm64Const.UC_ARM64_REG_LR:
+                        return hypervisor.reg_read64(30);
+                    case Arm64Const.UC_ARM64_REG_PC:
+                        return hypervisor.reg_read_pc64();
+                    case Arm64Const.UC_ARM64_REG_NZCV:
+                        return hypervisor.reg_read_nzcv();
+                    case Arm64Const.UC_ARM64_REG_CPACR_EL1:
+                        return hypervisor.reg_read_cpacr_el1();
+                    default:
+                        throw new HypervisorException("regId=" + regId);
+                }
             }
         } catch (HypervisorException e) {
             throw new BackendException(e);
@@ -800,10 +823,8 @@ public class HypervisorBackend64 extends HypervisorBackend {
 
     @Override
     protected byte[] addSoftBreakPoint(long address, int svcNumber, boolean thumb) {
-        try (Keystone keystone = new Keystone(KeystoneArchitecture.Arm64, KeystoneMode.LittleEndian)) {
-            KeystoneEncoded encoded = keystone.assemble("brk #" + svcNumber);
-            return encoded.getMachineCode();
-        }
+        KeystoneEncoded encoded = getKeystone().assemble("brk #" + svcNumber);
+        return encoded.getMachineCode();
     }
 
     @Override
@@ -812,11 +833,16 @@ public class HypervisorBackend64 extends HypervisorBackend {
 
         IOUtils.close(disassembler);
         disassembler = null;
+
+        if (keystone != null) {
+            keystone.close();
+            keystone = null;
+        }
     }
 
     @Override
     public long context_alloc() {
-        return Hypervisor.context_alloc();
+        return HypervisorFactory.context_alloc();
     }
 
     @Override
@@ -831,6 +857,90 @@ public class HypervisorBackend64 extends HypervisorBackend {
 
     @Override
     public void context_free(long context) {
-        Hypervisor.free(context);
+        HypervisorFactory.free(context);
+    }
+
+    private static final String[] CPU_FEATURE_KEYS = {
+        "floatingpoint",
+        "neon",
+        "neon_fp16",
+        "neon_hpfp",
+        "arm64",
+        "armv8_crc32",
+        "armv8_1_atomics",
+        "armv8_2_fhm",
+        "armv8_2_sha3",
+        "armv8_2_sha512",
+        "armv8_3_compnum",
+        "armv8_gpi",
+        "ucnormal_mem",
+        "arm.AdvSIMD",
+        "arm.AdvSIMD_HPFPCvt",
+        "arm.FP_SyncExceptions",
+        "arm.FEAT_AES",
+        "arm.FEAT_AFP",
+        "arm.FEAT_BF16",
+        "arm.FEAT_BTI",
+        "arm.FEAT_CRC32",
+        "arm.FEAT_CSSC",
+        "arm.FEAT_CSV2",
+        "arm.FEAT_CSV3",
+        "arm.FEAT_DIT",
+        "arm.FEAT_DotProd",
+        "arm.FEAT_DPB",
+        "arm.FEAT_DPB2",
+        "arm.FEAT_EBF16",
+        "arm.FEAT_ECV",
+        "arm.FEAT_FCMA",
+        "arm.FEAT_FHM",
+        "arm.FEAT_FlagM",
+        "arm.FEAT_FlagM2",
+        "arm.FEAT_FP16",
+        "arm.FEAT_FPAC",
+        "arm.FEAT_FPACCOMBINE",
+        "arm.FEAT_FRINTTS",
+        "arm.FEAT_HBC",
+        "arm.FEAT_I8MM",
+        "arm.FEAT_JSCVT",
+        "arm.FEAT_LRCPC",
+        "arm.FEAT_LRCPC2",
+        "arm.FEAT_LSE",
+        "arm.FEAT_LSE2",
+        "arm.FEAT_PACIMP",
+        "arm.FEAT_PAuth",
+        "arm.FEAT_PAuth2",
+        "arm.FEAT_PMULL",
+        "arm.FEAT_RDM",
+        "arm.FEAT_RPRES",
+        "arm.FEAT_SB",
+        "arm.FEAT_SHA1",
+        "arm.FEAT_SHA256",
+        "arm.FEAT_SHA3",
+        "arm.FEAT_SHA512",
+        "arm.FEAT_SME",
+        "arm.FEAT_SME2",
+        "arm.FEAT_SME_F64F64",
+        "arm.FEAT_SME_I16I64",
+        "arm.FEAT_SPECRES",
+        "arm.FEAT_SPECRES2",
+        "arm.FEAT_SSBS",
+        "arm.FEAT_WFxT",
+    };
+
+    private static final Map<String, Integer> CPU_FEATURES;
+    static {
+        Map<String, Integer> map = new HashMap<>();
+        for (String key : CPU_FEATURE_KEYS) {
+            int val = HypervisorFactory.sysctlInt("hw.optional." + key);
+            if (val >= 0) {
+                map.put(key, val);
+            }
+        }
+        CPU_FEATURES = Collections.unmodifiableMap(map);
+    }
+
+    @Override
+    public Map<String, Integer> getCpuFeatures() {
+        return CPU_FEATURES;
     }
 }

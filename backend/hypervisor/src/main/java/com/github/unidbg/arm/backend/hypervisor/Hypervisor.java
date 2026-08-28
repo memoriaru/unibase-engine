@@ -10,12 +10,8 @@ public class Hypervisor implements Closeable {
 
     private static final Logger log = LoggerFactory.getLogger(Hypervisor.class);
 
-    public static native void testVcpu();
-
     public static final long REG_VBAR_EL1 = 0xf0000000L;
     public static final long PSTATE$SS = 1 << 21;
-
-    public static native int getPageSize();
 
     private static native int setHypervisorCallback(long handle, HypervisorCallback callback);
 
@@ -33,6 +29,7 @@ public class Hypervisor implements Closeable {
     private static native int reg_set_nzcv(long handle, long value);
     private static native int reg_set_cpacr_el1(long handle, long value);
     private static native int reg_set_elr_el1(long handle, long value);
+    private static native int reg_set_pc64(long handle, long value);
     private static native byte[] reg_read_vector(long handle, int index);
     private static native int reg_set_vector(long handle, int index, byte[] vector);
     private static native int reg_set_spsr_el1(long handle, long value);
@@ -49,10 +46,11 @@ public class Hypervisor implements Closeable {
     private static native int emu_start(long handle, long pc);
     private static native int emu_stop(long handle);
 
-    public static native long context_alloc();
+    private static native long mem_allocated_size(long handle);
+    private static native long mem_resident_size(long handle);
+
     private static native void context_save(long handle, long context);
     private static native void context_restore(long handle, long context);
-    public static native void free(long context);
 
     private static native int getBRPs(long handle);
     private static native int getWRPs(long handle);
@@ -83,28 +81,39 @@ public class Hypervisor implements Closeable {
 
     private static native void enable_single_step(long handle, boolean status);
     public void enable_single_step(boolean status) {
-        if (log.isDebugEnabled()) {
-            log.debug("enable_single_step status={}", status);
+        if (log.isTraceEnabled()) {
+            log.trace("enable_single_step status={}", status);
         }
         enable_single_step(nativeHandle, status);
     }
 
     public void install_hw_breakpoint(int n, long address) {
-        if (log.isDebugEnabled()) {
-            log.debug("install_hw_breakpoint n={}, address=0x{}", n, Long.toHexString(address));
+        if (log.isTraceEnabled()) {
+            log.trace("install_hw_breakpoint n={}, address=0x{}", n, Long.toHexString(address));
         }
         install_hw_breakpoint(nativeHandle, n, address);
     }
     private static native void install_hw_breakpoint(long handle, int n, long address);
+    public void install_hw_breakpoint_range(int n, long begin, long end) {
+        if (log.isTraceEnabled()) {
+            log.trace("install_hw_breakpoint_range n={}, begin=0x{}, end=0x{}", n, Long.toHexString(begin), Long.toHexString(end));
+        }
+        install_hw_breakpoint_range(nativeHandle, n, begin, end);
+    }
+    private static native void install_hw_breakpoint_range(long handle, int n, long begin, long end);
+    public int get_page_perms(long address) {
+        return get_page_perms(nativeHandle, address);
+    }
+    private static native int get_page_perms(long handle, long address);
     public void disable_hw_breakpoint(int n) {
-        if (log.isDebugEnabled()) {
-            log.debug("disable_hw_breakpoint n={}", n);
+        if (log.isTraceEnabled()) {
+            log.trace("disable_hw_breakpoint n={}", n);
         }
         disable_hw_breakpoint(nativeHandle, n);
     }
     private static native void disable_hw_breakpoint(long handle, int n);
 
-    public void install_watchpoint(int n, long dbgwvr, long dbgwcr) {
+    public void install_watchpoint(int n, long dbgwcr, long dbgwvr) {
         install_watchpoint(nativeHandle, n, dbgwcr, dbgwvr);
         if (log.isDebugEnabled()) {
             log.debug("install_watchpoint n={}, dbgwvr=0x{}, dbgwcr=0x{}", n, Long.toHexString(dbgwvr), Long.toHexString(dbgwcr));
@@ -118,21 +127,28 @@ public class Hypervisor implements Closeable {
     }
     private static native void install_watchpoint(long handle, int n, long dbgwcr, long dbgwvr);
 
+    private void checkReturnCode(int ret) {
+        if (ret != 0) {
+            throw new HypervisorException("ret=" + ret);
+        }
+    }
+
     private final long nativeHandle;
 
     private static Hypervisor singleInstance;
 
     public Hypervisor(boolean is64Bit) {
-        if (!is64Bit) {
+        if (is64Bit) {
+            synchronized (Hypervisor.class) {
+                if (singleInstance != null) {
+                    throw new IllegalStateException("Only one hypervisor VM instance per process allowed.");
+                }
+                this.nativeHandle = nativeInitialize(true);
+                singleInstance = this;
+            }
+        } else {
             throw new UnsupportedOperationException();
         }
-
-        if (singleInstance != null) {
-            throw new IllegalStateException("Only one hypervisor VM instance per process allowed.");
-        }
-
-        this.nativeHandle = nativeInitialize(is64Bit);
-        singleInstance = this;
     }
 
     public void context_save(long context) {
@@ -149,65 +165,53 @@ public class Hypervisor implements Closeable {
         }
 
         int ret = setHypervisorCallback(nativeHandle, callback);
-        if (ret != 0) {
-            throw new HypervisorException("ret=" + ret);
-        }
+        checkReturnCode(ret);
     }
 
     public void mem_map(long address, long size, int perms) {
-        long start = log.isDebugEnabled() ? System.currentTimeMillis() : 0;
+        long start = log.isTraceEnabled() ? System.currentTimeMillis() : 0;
         int ret = mem_map(nativeHandle, address, size, perms);
         if (log.isTraceEnabled()) {
             log.trace("mem_map address=0x{}, size=0x{}, perms=0b{}, offset={}ms", Long.toHexString(address), Long.toHexString(size), Integer.toBinaryString(perms), System.currentTimeMillis() - start);
         }
-        if (ret != 0) {
-            throw new HypervisorException("ret=" + ret);
-        }
+        checkReturnCode(ret);
     }
 
     public void mem_protect(long address, long size, int perms) {
-        long start = log.isDebugEnabled() ? System.currentTimeMillis() : 0;
+        long start = log.isTraceEnabled() ? System.currentTimeMillis() : 0;
         int ret = mem_protect(nativeHandle, address, size, perms);
         if (log.isTraceEnabled()) {
             log.trace("mem_protect address=0x{}, size=0x{}, perms=0b{}, offset={}ms", Long.toHexString(address), Long.toHexString(size), Integer.toBinaryString(perms), System.currentTimeMillis() - start);
         }
-        if (ret != 0) {
-            throw new HypervisorException("ret=" + ret);
-        }
+        checkReturnCode(ret);
     }
 
     public void mem_unmap(long address, long size) {
-        long start = log.isDebugEnabled() ? System.currentTimeMillis() : 0;
+        long start = log.isTraceEnabled() ? System.currentTimeMillis() : 0;
         int ret = mem_unmap(nativeHandle, address, size);
         if (log.isTraceEnabled()) {
             log.trace("mem_unmap address=0x{}, size=0x{}, offset={}ms", Long.toHexString(address), Long.toHexString(size), System.currentTimeMillis() - start);
         }
-        if (ret != 0) {
-            throw new HypervisorException("ret=" + ret);
-        }
+        checkReturnCode(ret);
     }
 
     public void reg_write64(int index, long value) {
         if (index < 0 || index > 30) {
             throw new IllegalArgumentException("index=" + index);
         }
-        if (log.isTraceEnabled()) {
-            log.trace("reg_write64 index={}, value=0x{}", index, Long.toHexString(value));
+        if (log.isDebugEnabled()) {
+            log.debug("reg_write64 index={}, value=0x{}, pc=0x{}", index, Long.toHexString(value), Long.toHexString(reg_read_pc64()));
         }
         int ret = reg_write(nativeHandle, index, value);
-        if (ret != 0) {
-            throw new HypervisorException("ret=" + ret);
-        }
+        checkReturnCode(ret);
     }
 
     public void reg_set_sp64(long value) {
-        if (log.isTraceEnabled()) {
-            log.trace("reg_set_sp64 value=0x{}", Long.toHexString(value));
+        if (log.isDebugEnabled()) {
+            log.debug("reg_set_sp64 value=0x{}", Long.toHexString(value));
         }
         int ret = reg_set_sp64(nativeHandle, value);
-        if (ret != 0) {
-            throw new HypervisorException("ret=" + ret);
-        }
+        checkReturnCode(ret);
     }
 
     public void reg_set_tpidr_el0(long value) {
@@ -215,9 +219,7 @@ public class Hypervisor implements Closeable {
             log.trace("reg_set_tpidr_el0 value=0x{}", Long.toHexString(value));
         }
         int ret = reg_set_tpidr_el0(nativeHandle, value);
-        if (ret != 0) {
-            throw new HypervisorException("ret=" + ret);
-        }
+        checkReturnCode(ret);
     }
 
     public void reg_set_tpidrro_el0(long value) {
@@ -225,19 +227,20 @@ public class Hypervisor implements Closeable {
             log.trace("reg_set_tpidrro_el0 value=0x{}", Long.toHexString(value));
         }
         int ret = reg_set_tpidrro_el0(nativeHandle, value);
-        if (ret != 0) {
-            throw new HypervisorException("ret=" + ret);
-        }
+        checkReturnCode(ret);
     }
 
+    /**
+     * Sets the full SPSR_EL1, not just the NZCV bits.
+     * Named "nzcv" for Unicorn UC_ARM64_REG_NZCV compatibility,
+     * which reads/writes the entire CPSR/SPSR.
+     */
     public void reg_set_nzcv(long value) {
         if (log.isTraceEnabled()) {
             log.trace("reg_set_nzcv value=0x{}", Long.toHexString(value));
         }
         int ret = reg_set_nzcv(nativeHandle, value);
-        if (ret != 0) {
-            throw new HypervisorException("ret=" + ret);
-        }
+        checkReturnCode(ret);
     }
 
     public void reg_set_cpacr_el1(long value) {
@@ -245,9 +248,7 @@ public class Hypervisor implements Closeable {
             log.trace("reg_set_cpacr_el1 value=0x{}", Long.toHexString(value));
         }
         int ret = reg_set_cpacr_el1(nativeHandle, value);
-        if (ret != 0) {
-            throw new HypervisorException("ret=" + ret);
-        }
+        checkReturnCode(ret);
     }
 
     public void reg_set_elr_el1(long value) {
@@ -255,9 +256,19 @@ public class Hypervisor implements Closeable {
             log.trace("reg_set_elr_el1 value=0x{}", Long.toHexString(value));
         }
         int ret = reg_set_elr_el1(nativeHandle, value);
-        if (ret != 0) {
-            throw new HypervisorException("ret=" + ret);
+        checkReturnCode(ret);
+    }
+
+    /**
+     * Sets HV_REG_PC directly. Required for advancing PC after handling
+     * stage 2 direct VM exits (DATAABORT/INSNABORT) where ERET is not used.
+     */
+    public void reg_set_pc64(long value) {
+        if (log.isTraceEnabled()) {
+            log.trace("reg_set_pc64 value=0x{}", Long.toHexString(value));
         }
+        int ret = reg_set_pc64(nativeHandle, value);
+        checkReturnCode(ret);
     }
 
     public byte[] reg_read_vector(int index) {
@@ -271,9 +282,7 @@ public class Hypervisor implements Closeable {
 
     public void reg_set_vector(int index, byte[] vector) {
         int ret = reg_set_vector(nativeHandle, index, vector);
-        if (ret != 0) {
-            throw new HypervisorException("ret=" + ret);
-        }
+        checkReturnCode(ret);
     }
 
     public void reg_set_spsr_el1(long value) {
@@ -281,24 +290,20 @@ public class Hypervisor implements Closeable {
             log.trace("reg_set_spsr_el1 value=0x{}", Long.toHexString(value));
         }
         int ret = reg_set_spsr_el1(nativeHandle, value);
-        if (ret != 0) {
-            throw new HypervisorException("ret=" + ret);
-        }
+        checkReturnCode(ret);
     }
 
     public void mem_write(long address, byte[] bytes) {
-        long start = log.isDebugEnabled() ? System.currentTimeMillis() : 0;
+        long start = log.isTraceEnabled() ? System.currentTimeMillis() : 0;
         int ret = mem_write(nativeHandle, address, bytes);
         if (log.isTraceEnabled()) {
             log.trace("mem_write address=0x{}, size={}, offset={}ms", Long.toHexString(address), bytes.length, System.currentTimeMillis() - start);
         }
-        if (ret != 0) {
-            throw new HypervisorException("ret=" + ret);
-        }
+        checkReturnCode(ret);
     }
 
     public byte[] mem_read(long address, int size) {
-        long start = log.isDebugEnabled() ? System.currentTimeMillis() : 0;
+        long start = log.isTraceEnabled() ? System.currentTimeMillis() : 0;
         byte[] ret = mem_read(nativeHandle, address, size);
         if (log.isTraceEnabled()) {
             log.trace("mem_read address=0x{}, size={}, offset={}ms", Long.toHexString(address), size, System.currentTimeMillis() - start);
@@ -313,10 +318,11 @@ public class Hypervisor implements Closeable {
         if (index < 0 || index > 30) {
             throw new IllegalArgumentException("index=" + index);
         }
+        long value = reg_read(nativeHandle, index);
         if (log.isTraceEnabled()) {
-            log.trace("reg_read64 index={}", index);
+            log.trace("reg_read64 index={}, value=0x{}", index, Long.toHexString(value));
         }
-        return reg_read(nativeHandle, index);
+        return value;
     }
 
     public long reg_read_sp64() {
@@ -335,6 +341,10 @@ public class Hypervisor implements Closeable {
         return pc;
     }
 
+    /**
+     * Reads the full SPSR_EL1, not just the NZCV bits.
+     * @see #reg_set_nzcv(long)
+     */
     public long reg_read_nzcv() {
         long nzcv = reg_read_nzcv(nativeHandle);
         if (log.isTraceEnabled()) {
@@ -353,9 +363,7 @@ public class Hypervisor implements Closeable {
 
     public void emu_start(long begin) {
         int ret = emu_start(nativeHandle, begin);
-        if (ret != 0) {
-            throw new HypervisorException("ret=" + ret);
-        }
+        checkReturnCode(ret);
     }
 
     public void emu_stop() {
@@ -364,16 +372,28 @@ public class Hypervisor implements Closeable {
         }
 
         int ret = emu_stop(nativeHandle);
-        if (ret != 0) {
-            throw new HypervisorException("ret=" + ret);
-        }
+        checkReturnCode(ret);
     }
+
+    public long getMemAllocatedSize() {
+        return mem_allocated_size(nativeHandle);
+    }
+
+    public long getMemResidentSize() {
+        return mem_resident_size(nativeHandle);
+    }
+
+    private boolean closed;
 
     @Override
     public void close() {
-        nativeDestroy(nativeHandle);
-
-        singleInstance = null;
+        if (!closed) {
+            synchronized (Hypervisor.class) {
+                nativeDestroy(nativeHandle);
+                singleInstance = null;
+                closed = true;
+            }
+        }
     }
 
 }

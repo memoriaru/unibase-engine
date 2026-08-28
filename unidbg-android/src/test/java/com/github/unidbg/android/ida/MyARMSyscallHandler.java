@@ -97,7 +97,7 @@ class MyARMSyscallHandler extends ARM32SyscallHandler {
             }
             default:
                 System.err.println(msg);
-                emulator.attach().debug();
+                emulator.attach().debug("Unhandled syscall: " + msg);
                 return -1;
         }
 //        System.out.println(msg);

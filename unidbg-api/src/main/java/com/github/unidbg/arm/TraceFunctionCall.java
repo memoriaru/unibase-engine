@@ -51,7 +51,7 @@ public abstract class TraceFunctionCall implements CodeHook {
                 log.warn("Illegal state address={}, call={}", UnidbgPointer.pointer(emulator, address), call.toReadableString(emulator));
                 if (LoggerFactory.getLogger(AbstractEmulator.class).isDebugEnabled() ||
                         LoggerFactory.getLogger(BaseTask.class).isDebugEnabled()) {
-                    emulator.attach().debug();
+                    emulator.attach().debug("TraceFunctionCall illegal state: expected return to " + call.toReadableString(emulator));
                 }
                 detectedIllegalState = true;
                 return;

@@ -1,8 +1,10 @@
 #include <array>
+#include <csetjmp>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <iostream>
+#include <string>
 
 #include <stdlib.h>
 #include <unistd.h>
@@ -15,8 +17,41 @@
 #include <sys/errno.h>
 #endif
 
+#include <fmt/format.h>
+
 #include "dynarmic.h"
 #include "arm_dynarmic_cp15.h"
+
+static thread_local jmp_buf t_jmp_buf;
+static thread_local bool t_jmp_set = false;
+static thread_local char t_jmp_msg[4096];
+
+struct dynarmic;
+static thread_local struct dynarmic *t_current_dynarmic = NULL;
+
+static void append_guest_context(std::string &msg);
+
+namespace mcl::detail {
+[[noreturn]] void assert_terminate_impl(const char* expr_str, fmt::string_view msg, fmt::format_args args) {
+    if (t_jmp_set) {
+        std::string full_msg = fmt::format("assertion failed: {}\nMessage: ", expr_str);
+        full_msg += fmt::vformat(msg, args);
+
+        append_guest_context(full_msg);
+
+        size_t len = full_msg.size();
+        if (len >= sizeof(t_jmp_msg)) len = sizeof(t_jmp_msg) - 1;
+        memcpy(t_jmp_msg, full_msg.c_str(), len);
+        t_jmp_msg[len] = '\0';
+        t_jmp_set = false;
+        longjmp(t_jmp_buf, 1);
+    }
+    fmt::print(stderr, "assertion failed: {}\nMessage: ", expr_str);
+    fmt::vprint(stderr, msg, args);
+    std::fflush(stderr);
+    std::terminate();
+}
+}
 
 static JavaVM* cachedJVM = NULL;
 static jmethodID callSVC = NULL;
@@ -24,6 +59,7 @@ static jmethodID handleInterpreterFallback = NULL;
 static jmethodID handleExceptionRaised = NULL;
 static jmethodID handleMemoryReadFailed = NULL;
 static jmethodID handleMemoryWriteFailed = NULL;
+static jclass cDynarmicException = NULL;
 
 static char *get_memory_page(khash_t(memory) *memory, u64 vaddr, size_t num_page_table_entries, void **page_table) {
     u64 idx = vaddr >> DYN_PAGE_BITS;
@@ -115,7 +151,7 @@ public:
 //            printf("MemoryRead32[%s->%s:%d]: vaddr=0x%x, value=0x%x\n", __FILE__, __func__, __LINE__, vaddr, dest[0]);
             return dest[0];
         } else {
-            printf("MemoryRead32[%s->%s:%d]: vaddr=0x%x\n", __FILE__, __func__, __LINE__, vaddr);
+            fprintf(stderr, "MemoryRead32[%s->%s:%d]: vaddr=0x%x\n", __FILE__, __func__, __LINE__, vaddr);
             JNIEnv *env;
             cachedJVM->AttachCurrentThread((void **)&env, NULL);
             env->CallVoidMethod(callback, handleMemoryReadFailed, vaddr, 4);
@@ -135,6 +171,10 @@ public:
             return dest[0];
         } else {
             fprintf(stderr, "MemoryRead64[%s->%s:%d]: vaddr=0x%x\n", __FILE__, __func__, __LINE__, vaddr);
+            JNIEnv *env;
+            cachedJVM->AttachCurrentThread((void **)&env, NULL);
+            env->CallVoidMethod(callback, handleMemoryReadFailed, vaddr, 8);
+            cachedJVM->DetachCurrentThread();
             abort();
             return 0;
         }
@@ -164,6 +204,10 @@ public:
             dest[0] = value;
         } else {
             fprintf(stderr, "MemoryWrite16[%s->%s:%d]: vaddr=0x%x\n", __FILE__, __func__, __LINE__, vaddr);
+            JNIEnv *env;
+            cachedJVM->AttachCurrentThread((void **)&env, NULL);
+            env->CallVoidMethod(callback, handleMemoryWriteFailed, vaddr, 2);
+            cachedJVM->DetachCurrentThread();
             abort();
         }
     }
@@ -196,6 +240,10 @@ public:
             dest[0] = value;
         } else {
             fprintf(stderr, "MemoryWrite64[%s->%s:%d]: vaddr=0x%x\n", __FILE__, __func__, __LINE__, vaddr);
+            JNIEnv *env;
+            cachedJVM->AttachCurrentThread((void **)&env, NULL);
+            env->CallVoidMethod(callback, handleMemoryWriteFailed, vaddr, 8);
+            cachedJVM->DetachCurrentThread();
             abort();
         }
     }
@@ -321,6 +369,10 @@ public:
             return dest[0];
         } else {
             fprintf(stderr, "MemoryRead16[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
+            JNIEnv *env;
+            cachedJVM->AttachCurrentThread((void **)&env, NULL);
+            env->CallVoidMethod(callback, handleMemoryReadFailed, vaddr, 2);
+            cachedJVM->DetachCurrentThread();
             abort();
             return 0;
         }
@@ -336,6 +388,10 @@ public:
             return dest[0];
         } else {
             fprintf(stderr, "MemoryRead32[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
+            JNIEnv *env;
+            cachedJVM->AttachCurrentThread((void **)&env, NULL);
+            env->CallVoidMethod(callback, handleMemoryReadFailed, vaddr, 4);
+            cachedJVM->DetachCurrentThread();
             abort();
             return 0;
         }
@@ -351,6 +407,10 @@ public:
             return dest[0];
         } else {
             fprintf(stderr, "MemoryRead64[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
+            JNIEnv *env;
+            cachedJVM->AttachCurrentThread((void **)&env, NULL);
+            env->CallVoidMethod(callback, handleMemoryReadFailed, vaddr, 8);
+            cachedJVM->DetachCurrentThread();
             abort();
             return 0;
         }
@@ -365,6 +425,10 @@ public:
             dest[0] = value;
         } else {
             fprintf(stderr, "MemoryWrite8[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
+            JNIEnv *env;
+            cachedJVM->AttachCurrentThread((void **)&env, NULL);
+            env->CallVoidMethod(callback, handleMemoryWriteFailed, vaddr, 1);
+            cachedJVM->DetachCurrentThread();
             abort();
         }
     }
@@ -379,9 +443,12 @@ public:
             dest[0] = value;
         } else {
             fprintf(stderr, "MemoryWrite16[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
+            JNIEnv *env;
+            cachedJVM->AttachCurrentThread((void **)&env, NULL);
+            env->CallVoidMethod(callback, handleMemoryWriteFailed, vaddr, 2);
+            cachedJVM->DetachCurrentThread();
             abort();
         }
-
     }
     void MemoryWrite32(u64 vaddr, u32 value) override {
         if(vaddr & 3) {
@@ -394,6 +461,10 @@ public:
             dest[0] = value;
         } else {
             fprintf(stderr, "MemoryWrite32[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
+            JNIEnv *env;
+            cachedJVM->AttachCurrentThread((void **)&env, NULL);
+            env->CallVoidMethod(callback, handleMemoryWriteFailed, vaddr, 4);
+            cachedJVM->DetachCurrentThread();
             abort();
         }
     }
@@ -408,6 +479,10 @@ public:
             dest[0] = value;
         } else {
             fprintf(stderr, "MemoryWrite64[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
+            JNIEnv *env;
+            cachedJVM->AttachCurrentThread((void **)&env, NULL);
+            env->CallVoidMethod(callback, handleMemoryWriteFailed, vaddr, 8);
+            cachedJVM->DetachCurrentThread();
             abort();
         }
     }
@@ -522,6 +597,38 @@ typedef struct dynarmic {
   Dynarmic::ExclusiveMonitor *monitor;
 } *t_dynarmic;
 
+static void dump_block_instructions(std::string &msg, khash_t(memory) *memory, u64 pc,
+                                    size_t num_page_table_entries, void **page_table) {
+    msg += fmt::format("\nGuest block PC: 0x{:x}", pc);
+    for (int i = -10; i <= 20; i++) {
+        u64 addr = pc + (u64)((int64_t)i * 4);
+        void *p = get_memory(memory, addr, num_page_table_entries, page_table);
+        if (!p) continue;
+        u32 inst = *(u32 *)p;
+        u32 top8 = (inst >> 24) & 0xFF;
+        bool is_fp = (top8 & 0x5E) == 0x0E || (top8 & 0x5E) == 0x1E;
+        const char *marker = (i == 0) ? " <-- PC" : (is_fp ? " <-- FP/SIMD" : "");
+        msg += fmt::format("\n  0x{:x}: 0x{:08x}{}", addr, inst, marker);
+        if (i > 0 && ((inst & 0xFC000000) == 0x14000000
+                   || (inst & 0xFFFFFC1F) == 0xD65F0000
+                   || (inst & 0xFF000010) == 0x54000000))
+            break;
+    }
+}
+
+static void append_guest_context(std::string &msg) {
+    struct dynarmic *d = t_current_dynarmic;
+    if (!d) return;
+
+    if (d->is64Bit && d->jit64) {
+        u64 pc = d->jit64->GetPC();
+        dump_block_instructions(msg, d->memory, pc, d->num_page_table_entries, d->page_table);
+    } else if (!d->is64Bit && d->jit32) {
+        u32 pc = d->jit32->Regs()[15];
+        dump_block_instructions(msg, d->memory, (u64)pc, d->num_page_table_entries, d->page_table);
+    }
+}
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -537,6 +644,9 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_setD
   if(dynarmic->is64Bit) {
     DynarmicCallbacks64 *cb = dynarmic->cb64;
     if(cb) {
+      if(cb->callback) {
+        env->DeleteGlobalRef(cb->callback);
+      }
       cb->callback = env->NewGlobalRef(callback);
     } else {
       return 1;
@@ -544,6 +654,9 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_setD
   } else {
     DynarmicCallbacks32 *cb = dynarmic->cb32;
     if(cb) {
+      if(cb->callback) {
+        env->DeleteGlobalRef(cb->callback);
+      }
       cb->callback = env->NewGlobalRef(callback);
     } else {
       return 1;
@@ -730,14 +843,19 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_mem_
   }
   t_dynarmic dynarmic = (t_dynarmic) handle;
   khash_t(memory) *memory = dynarmic->memory;
-  int ret;
+
+  // Pre-check: ensure all pages exist in the hash table before modifying anything
+  for(u64 vaddr = address; vaddr < address + size; vaddr += DYN_PAGE_SIZE) {
+    khiter_t k = kh_get(memory, memory, vaddr);
+    if(k == kh_end(memory)) {
+      fprintf(stderr, "mem_unmap failed[%s->%s:%d]: vaddr=%p not found\n", __FILE__, __func__, __LINE__, (void*)vaddr);
+      return 3;
+    }
+  }
+
   for(u64 vaddr = address; vaddr < address + size; vaddr += DYN_PAGE_SIZE) {
     u64 idx = vaddr >> DYN_PAGE_BITS;
     khiter_t k = kh_get(memory, memory, vaddr);
-    if(k == kh_end(memory)) {
-      fprintf(stderr, "mem_unmap failed[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
-      return 3;
-    }
     if(dynarmic->page_table && idx < dynarmic->num_page_table_entries) {
       dynarmic->page_table[idx] = NULL;
     }
@@ -767,13 +885,18 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_mem_
   }
   t_dynarmic dynarmic = (t_dynarmic) handle;
   khash_t(memory) *memory = dynarmic->memory;
+
+  // Pre-check: ensure no page in the range is already mapped
+  for(u64 vaddr = address; vaddr < address + size; vaddr += DYN_PAGE_SIZE) {
+    if(kh_get(memory, memory, vaddr) != kh_end(memory)) {
+      fprintf(stderr, "mem_map failed[%s->%s:%d]: vaddr=%p already mapped\n", __FILE__, __func__, __LINE__, (void*)vaddr);
+      return 3;
+    }
+  }
+
   int ret;
   for(u64 vaddr = address; vaddr < address + size; vaddr += DYN_PAGE_SIZE) {
     u64 idx = vaddr >> DYN_PAGE_BITS;
-    if(kh_get(memory, memory, vaddr) != kh_end(memory)) {
-      fprintf(stderr, "mem_map failed[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
-      return 3;
-    }
 
     void *addr = mmap(NULL, DYN_PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if(addr == MAP_FAILED) {
@@ -786,6 +909,11 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_mem_
       // 0xffffff80001f0000ULL: 0x10000
     }
     khiter_t k = kh_put(memory, memory, vaddr, &ret);
+    if(ret < 0) {
+      fprintf(stderr, "kh_put failed: vaddr=%p\n", (void*)vaddr);
+      abort();
+      return 0;
+    }
     t_memory_page page = (t_memory_page) calloc(1, sizeof(struct memory_page));
     if(page == NULL) {
       fprintf(stderr, "calloc page failed: size=%lu\n", sizeof(struct memory_page));
@@ -814,7 +942,6 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_mem_
   }
   t_dynarmic dynarmic = (t_dynarmic) handle;
   khash_t(memory) *memory = dynarmic->memory;
-  int ret;
   for(u64 vaddr = address; vaddr < address + size; vaddr += DYN_PAGE_SIZE) {
     khiter_t k = kh_get(memory, memory, vaddr);
     if(k == kh_end(memory)) {
@@ -846,7 +973,10 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_mem_
     u64 len = end - start;
     char *addr = get_memory_page(memory, vaddr, dynarmic->num_page_table_entries, dynarmic->page_table);
     if(addr == NULL) {
-      fprintf(stderr, "mem_write failed[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
+      char msg[256];
+      snprintf(msg, sizeof(msg), "mem_write failed[%s->%s:%d]: vaddr=%p, address=%p, size=%d", __FILE__, __func__, __LINE__, (void*)vaddr, (void*)address, size);
+      env->ReleaseByteArrayElements(bytes, data, JNI_ABORT);
+      env->ThrowNew(cDynarmicException, msg);
       return 1;
     }
     char *dest = &addr[start];
@@ -876,7 +1006,10 @@ JNIEXPORT jbyteArray JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmi
     u64 len = end - start;
     char *addr = get_memory_page(memory, vaddr, dynarmic->num_page_table_entries, dynarmic->page_table);
     if(addr == NULL) {
-      fprintf(stderr, "mem_read failed[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
+      char msg[256];
+      snprintf(msg, sizeof(msg), "mem_read failed[%s->%s:%d]: vaddr=%p, address=%p, size=%d", __FILE__, __func__, __LINE__, (void*)vaddr, (void*)address, size);
+      env->DeleteLocalRef(bytes);
+      env->ThrowNew(cDynarmicException, msg);
       return NULL;
     }
     jbyte *src = (jbyte *)&addr[start];
@@ -899,11 +1032,11 @@ JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_reg
     if(jit) {
       return jit->GetPC();
     } else {
-      abort();
+      env->ThrowNew(cDynarmicException, "reg_read_pc64: jit64 is null");
       return 1;
     }
   } else {
-    abort();
+    env->ThrowNew(cDynarmicException, "reg_read_pc64: not 64-bit mode");
     return -1;
   }
 }
@@ -942,11 +1075,11 @@ JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_reg
     if(jit) {
       return jit->GetSP();
     } else {
-      abort();
+      env->ThrowNew(cDynarmicException, "reg_read_sp64: jit64 is null");
       return 1;
     }
   } else {
-    abort();
+    env->ThrowNew(cDynarmicException, "reg_read_sp64: not 64-bit mode");
     return -1;
   }
 }
@@ -964,11 +1097,11 @@ JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_reg
     if(jit) {
       return jit->GetPstate();
     } else {
-      abort();
+      env->ThrowNew(cDynarmicException, "reg_read_nzcv: jit64 is null");
       return 1;
     }
   } else {
-    abort();
+    env->ThrowNew(cDynarmicException, "reg_read_nzcv: not 64-bit mode");
     return -1;
   }
 }
@@ -1123,7 +1256,7 @@ JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_reg
     if(jit) {
       return jit->GetRegister(index);
     } else {
-      abort();
+      env->ThrowNew(cDynarmicException, "reg_read: jit64 is null");
       return -1;
     }
   } else {
@@ -1131,7 +1264,7 @@ JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_reg
     if(jit) {
       return jit->Regs()[index];
     } else {
-      abort();
+      env->ThrowNew(cDynarmicException, "reg_read: jit32 is null");
       return -1;
     }
   }
@@ -1146,14 +1279,14 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_reg_
   (JNIEnv *env, jclass clazz, jlong handle) {
   t_dynarmic dynarmic = (t_dynarmic) handle;
   if(dynarmic->is64Bit) {
-    abort();
+    env->ThrowNew(cDynarmicException, "reg_read_cpsr: not 32-bit mode");
     return 1;
   } else {
     Dynarmic::A32::Jit *jit = dynarmic->jit32;
     if(jit) {
       return jit->Cpsr();
     } else {
-      abort();
+      env->ThrowNew(cDynarmicException, "reg_read_cpsr: jit32 is null");
       return -1;
     }
   }
@@ -1168,7 +1301,7 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_reg_
   (JNIEnv *env, jclass clazz, jlong handle, jint value) {
   t_dynarmic dynarmic = (t_dynarmic) handle;
   if(dynarmic->is64Bit) {
-    abort();
+    env->ThrowNew(cDynarmicException, "reg_write_cpsr: not 32-bit mode");
     return 1;
   } else {
     Dynarmic::A32::Jit *jit = dynarmic->jit32;
@@ -1176,7 +1309,7 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_reg_
       jit->SetCpsr(value);
       return 0;
     } else {
-      abort();
+      env->ThrowNew(cDynarmicException, "reg_write_cpsr: jit32 is null");
       return -1;
     }
   }
@@ -1191,7 +1324,7 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_reg_
   (JNIEnv *env, jclass clazz, jlong handle, jint value) {
   t_dynarmic dynarmic = (t_dynarmic) handle;
   if(dynarmic->is64Bit) {
-    abort();
+    env->ThrowNew(cDynarmicException, "reg_write_c13_c0_3: not 32-bit mode");
     return 1;
   } else {
     DynarmicCallbacks32 *cb32 = dynarmic->cb32;
@@ -1199,7 +1332,7 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_reg_
       cb32->cp15.get()->uro = value;
       return 0;
     } else {
-      abort();
+      env->ThrowNew(cDynarmicException, "reg_write_c13_c0_3: cb32 is null");
       return -1;
     }
   }
@@ -1213,31 +1346,52 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_reg_
 JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_emu_1start
   (JNIEnv *env, jclass clazz, jlong handle, jlong pc) {
   t_dynarmic dynarmic = (t_dynarmic) handle;
+  if (setjmp(t_jmp_buf) != 0) {
+    fprintf(stderr, "%s\n", t_jmp_msg);
+    jobject cb = NULL;
+    jlong guest_pc = 0;
+    if (dynarmic->is64Bit && dynarmic->cb64) {
+      cb = dynarmic->cb64->callback;
+      if (dynarmic->jit64) guest_pc = (jlong)dynarmic->jit64->GetPC();
+    } else if (!dynarmic->is64Bit && dynarmic->cb32) {
+      cb = dynarmic->cb32->callback;
+      if (dynarmic->jit32) guest_pc = (jlong)dynarmic->jit32->Regs()[15];
+    }
+    t_current_dynarmic = NULL;
+    if (cb) {
+      env->CallVoidMethod(cb, handleExceptionRaised, guest_pc, (jint)0);
+    }
+    env->ThrowNew(cDynarmicException, t_jmp_msg);
+    return -1;
+  }
+  t_current_dynarmic = dynarmic;
+  t_jmp_set = true;
   if(dynarmic->is64Bit) {
     Dynarmic::A64::Jit *jit = dynarmic->jit64;
     if(jit) {
-      Dynarmic::A64::Jit *cpu = jit;
-      cpu->SetPC(pc);
-      cpu->Run();
+      jit->SetPC(pc);
+      jit->Run();
     } else {
+      t_jmp_set = false;
       return 1;
     }
   } else {
     Dynarmic::A32::Jit *jit = dynarmic->jit32;
     if(jit) {
-      Dynarmic::A32::Jit *cpu = jit;
-      bool thumb = pc & 1;
       if(pc & 1) {
-        cpu->SetCpsr(0x00000030); // Thumb user mode
+        jit->SetCpsr(0x00000030); // Thumb user mode
       } else {
-        cpu->SetCpsr(0x000001d0); // Arm user mode
+        jit->SetCpsr(0x000001d0); // Arm user mode
       }
-      cpu->Regs()[15] = (u32) (pc & ~1);
-      cpu->Run();
+      jit->Regs()[15] = (u32) (pc & ~1);
+      jit->Run();
     } else {
+      t_jmp_set = false;
       return 1;
     }
   }
+  t_jmp_set = false;
+  t_current_dynarmic = NULL;
   return 0;
 }
 
@@ -1252,16 +1406,14 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_emu_
   if(dynarmic->is64Bit) {
     Dynarmic::A64::Jit *jit = dynarmic->jit64;
     if(jit) {
-      Dynarmic::A64::Jit *cpu = jit;
-      cpu->HaltExecution();
+      jit->HaltExecution();
     } else {
       return 1;
     }
   } else {
     Dynarmic::A32::Jit *jit = dynarmic->jit32;
     if(jit) {
-      Dynarmic::A32::Jit *cpu = jit;
-      cpu->HaltExecution();
+      jit->HaltExecution();
     } else {
       return 1;
     }
@@ -1278,10 +1430,10 @@ JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_con
   (JNIEnv *env, jclass clazz, jlong handle) {
   t_dynarmic dynarmic = (t_dynarmic) handle;
   if(dynarmic->is64Bit) {
-    void *ctx = malloc(sizeof(struct context64));
+    void *ctx = calloc(1, sizeof(struct context64));
     return (jlong) ctx;
   } else {
-    void *ctx = malloc(sizeof(struct context32));
+    void *ctx = calloc(1, sizeof(struct context32));
     return (jlong) ctx;
   }
 }
@@ -1367,6 +1519,55 @@ JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_free
   free(ctx);
 }
 
+/*
+ * Class:     com_github_unidbg_arm_backend_dynarmic_Dynarmic
+ * Method:    mem_allocated_size
+ * Signature: (J)J
+ */
+JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_mem_1allocated_1size
+  (JNIEnv *env, jclass clazz, jlong handle) {
+  t_dynarmic dynarmic = (t_dynarmic) handle;
+  khash_t(memory) *memory = dynarmic->memory;
+  return (jlong)(kh_size(memory) * DYN_PAGE_SIZE);
+}
+
+/*
+ * Class:     com_github_unidbg_arm_backend_dynarmic_Dynarmic
+ * Method:    mem_resident_size
+ * Signature: (J)J
+ */
+JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_mem_1resident_1size
+  (JNIEnv *env, jclass clazz, jlong handle) {
+  t_dynarmic dynarmic = (t_dynarmic) handle;
+  khash_t(memory) *memory = dynarmic->memory;
+#if defined(_WIN32) || defined(_WIN64)
+  return (jlong)(kh_size(memory) * DYN_PAGE_SIZE);
+#else
+  long sys_page_size = sysconf(_SC_PAGESIZE);
+  size_t pages_per_dyn = DYN_PAGE_SIZE / sys_page_size;
+  if(pages_per_dyn == 0) pages_per_dyn = 1;
+  uint64_t resident = 0;
+  unsigned char vec[16];
+  for (khint_t k = kh_begin(memory); k < kh_end(memory); k++) {
+    if(kh_exist(memory, k)) {
+      t_memory_page page = kh_value(memory, k);
+#ifdef __APPLE__
+      if(mincore(page->addr, DYN_PAGE_SIZE, reinterpret_cast<char *>(vec)) == 0) {
+#else
+      if(mincore(page->addr, DYN_PAGE_SIZE, vec) == 0) {
+#endif
+        for(size_t i = 0; i < pages_per_dyn; i++) {
+          if(vec[i] & 1) {
+            resident += sys_page_size;
+          }
+        }
+      }
+    }
+  }
+  return (jlong) resident;
+#endif
+}
+
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
   JNIEnv *env;
   if (JNI_OK != vm->GetEnv((void **)&env, JNI_VERSION_1_6)) {
@@ -1382,6 +1583,13 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
   handleMemoryReadFailed = env->GetMethodID(cDynarmicCallback, "handleMemoryReadFailed", "(JI)V");
   handleMemoryWriteFailed = env->GetMethodID(cDynarmicCallback, "handleMemoryWriteFailed", "(JI)V");
   cachedJVM = vm;
+
+  jclass localDynarmicException = env->FindClass("com/github/unidbg/arm/backend/dynarmic/DynarmicException");
+  if (env->ExceptionCheck()) {
+    return JNI_ERR;
+  }
+  cDynarmicException = (jclass) env->NewGlobalRef(localDynarmicException);
+  env->DeleteLocalRef(localDynarmicException);
 
   return JNI_VERSION_1_6;
 }

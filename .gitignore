@@ -28,3 +28,6 @@ build/
 /unidbg-android/src/test/java/universal/
 /unidbg-android/src/test/java/unibase/
 /unidbg-android/src/test/java/com/github/unidbg/android/utils/
+/unidbg-ios/src/test/resources/example_binaries/cpu_features
+/unidbg-ios/src/test/resources/example_binaries/ios_cpu_features
+

@@ -146,7 +146,7 @@ public class ARM32SyscallHandler extends DarwinSyscallHandler {
             return;
         }
         if (intno == ARMEmulator.EXCP_UDEF) {
-            createBreaker(emulator).debug();
+            createBreaker(emulator).debug("Undefined instruction (EXCP_UDEF) at " + pc);
             return;
         }
 
@@ -545,7 +545,7 @@ public class ARM32SyscallHandler extends DarwinSyscallHandler {
 
         log.warn("handleInterrupt intno={}, NR={}, svcNumber=0x{}, PC={}, syscall={}", intno, NR, Integer.toHexString(swi), pc, syscall, exception);
         if (log.isDebugEnabled() || LoggerFactory.getLogger(AbstractEmulator.class).isDebugEnabled()) {
-            createBreaker(emulator).debug();
+            createBreaker(emulator).debug("Unhandled syscall NR=" + NR + " (" + syscall + ") at " + pc);
         }
 
         if (exception instanceof RuntimeException) {
@@ -918,7 +918,7 @@ public class ARM32SyscallHandler extends DarwinSyscallHandler {
         int port = context.getIntArg(0);
         log.info("_semaphore_signal_trap port={}", port);
         if (log.isDebugEnabled() || LoggerFactory.getLogger(AbstractEmulator.class).isDebugEnabled()) {
-            createBreaker(emulator).debug();
+            createBreaker(emulator).debug("_semaphore_signal_trap port=" + port);
         }
         return 0;
     }
@@ -949,7 +949,7 @@ public class ARM32SyscallHandler extends DarwinSyscallHandler {
         }
 
         log.info("psynch_cvwait LR={}", emulator.getContext().getLRPointer());
-        emulator.attach().debug();
+        emulator.attach().debug("psynch_cvwait");
         emulator.getMemory().setErrno(UnixEmulator.EINTR);
         return -1;
     }
@@ -1409,7 +1409,7 @@ public class ARM32SyscallHandler extends DarwinSyscallHandler {
                             return 0;
                     }
                     if (log.isDebugEnabled()) {
-                        createBreaker(emulator).debug();
+                        createBreaker(emulator).debug("sysctl CTL_HW unhandled");
                     }
                     return -1;
                 }
@@ -1653,7 +1653,7 @@ public class ARM32SyscallHandler extends DarwinSyscallHandler {
                 }
                 log.info("{}, family={}, rt={}", msg, family, rt);
                 if (log.isDebugEnabled()) {
-                    createBreaker(emulator).debug();
+                    createBreaker(emulator).debug("sysctl NET family=" + family);
                 }
             default:
                 log.info("sysctl top={}, namelen={}, buffer={}, bufferSize={}, set0={}, set1={}", name.getInt(0), namelen, buffer, bufferSize, set0, set1);
@@ -2627,7 +2627,7 @@ public class ARM32SyscallHandler extends DarwinSyscallHandler {
             default:
                 log.warn("mach_msg_trap header={}, size={}, lr={}", header, header.size(), UnidbgPointer.register(emulator, ArmConst.UC_ARM_REG_LR));
                 if (log.isDebugEnabled() || LoggerFactory.getLogger(AbstractEmulator.class).isDebugEnabled()) {
-                    createBreaker(emulator).debug();
+                    createBreaker(emulator).debug("Unhandled mach_msg_trap");
                 }
                 break;
         }

@@ -488,7 +488,7 @@ public abstract class UnixSyscallHandler<T extends NewFileIO> implements Syscall
                 return 0;
         }
 
-        createBreaker(emulator).debug();
+        createBreaker(emulator).debug("Unsupported sigaction signum=" + signum);
         throw new UnsupportedOperationException("signum=" + signum);
     }
 

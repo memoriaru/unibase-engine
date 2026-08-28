@@ -75,7 +75,7 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
             return;
         }
         if (intno == ARMEmulator.EXCP_UDEF) {
-            createBreaker(emulator).debug();
+            createBreaker(emulator).debug("Undefined instruction (EXCP_UDEF) at " + pc);
             return;
         }
 
@@ -116,6 +116,7 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
                 }
                 Svc svc = svcMemory.getSvc(swi);
                 if (svc != null) {
+                    log.debug("swi={}, svc={}", swi, svc);
                     backend.reg_write(Arm64Const.UC_ARM64_REG_X0, svc.handle(emulator));
                     return;
                 }
@@ -409,7 +410,7 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
 
         log.warn("handleInterrupt intno={}, NR={}, svcNumber=0x{}, PC={}, LR={}, syscall={}", intno, NR, Integer.toHexString(swi), pc, UnidbgPointer.register(emulator, Arm64Const.UC_ARM64_REG_LR), syscall, exception);
         if (log.isDebugEnabled()) {
-            emulator.attach().debug();
+            emulator.attach().debug("Unhandled syscall NR=" + NR + " (" + syscall + ") at " + pc);
         }
         if (exception instanceof RuntimeException) {
             throw (RuntimeException) exception;
@@ -551,7 +552,7 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
         log.info("pthread_clone child_stack={}, thread_id={}, fn={}, arg={}, flags={}", child_stack, threadId, fn, arg, list);
         Logger log = LoggerFactory.getLogger(AbstractEmulator.class);
         if (log.isDebugEnabled()) {
-            emulator.attach().debug();
+            emulator.attach().debug("pthread_clone thread_id=" + threadId + ", fn=" + fn);
         }
         return threadId;
     }
@@ -1119,7 +1120,7 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
             System.out.println("exit with code: " + status);
         }
         if (LoggerFactory.getLogger(AbstractEmulator.class).isDebugEnabled()) {
-            createBreaker(emulator).debug();
+            createBreaker(emulator).debug("exit_group status=" + status);
         }
         emulator.getBackend().emu_stop();
     }
@@ -1179,7 +1180,7 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
         int option = context.getIntArg(0);
         long arg2 = context.getLongArg(1);
         if (log.isDebugEnabled()) {
-            log.debug("prctl option=0x{}, arg2=0x{}", Integer.toHexString(option), Long.toHexString(arg2));
+            log.debug("prctl option=0x{}, arg2=0x{}, task={}", Integer.toHexString(option), Long.toHexString(arg2), emulator.getThreadDispatcher().getRunningTask());
         }
         switch (option) {
             case PR_SET_NAME:
@@ -1205,8 +1206,9 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
             case PR_SET_NO_NEW_PRIVS:
             case PR_SET_THP_DISABLE:
                 return 0;
+            default:
+                throw new UnsupportedOperationException("option=" + option);
         }
-        throw new UnsupportedOperationException("option=" + option);
     }
 
     private static final int CLOCK_REALTIME = 0;
@@ -1240,7 +1242,7 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
                 return 0;
         }
         if (log.isDebugEnabled()) {
-            emulator.attach().debug();
+            emulator.attach().debug("Unsupported clock_gettime clk_id=" + clk_id);
         }
         throw new UnsupportedOperationException("clk_id=" + clk_id);
     }
@@ -1333,13 +1335,17 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
             if (warning) {
                 log.warn(msg);
                 if (log.isTraceEnabled()) {
-                    emulator.attach().debug();
+                    emulator.attach().debug("mmap warning");
                 }
             } else {
                 log.debug(msg);
             }
         }
-        return emulator.getMemory().mmap2(start, length, prot, flags, fd, offset);
+        long mapped = emulator.getMemory().mmap2(start, length, prot, flags, fd, offset);
+        if (log.isDebugEnabled()) {
+            log.debug("mmap start=0x{}, mapped=0x{}, length=0x{}, prot=0x{}, flags=0x{}, fd={}, offset={}, task={}", Long.toHexString(start), Long.toHexString(mapped), Integer.toHexString(length), Integer.toHexString(prot), Integer.toHexString(flags), fd, offset, emulator.getThreadDispatcher().getRunningTask());
+        }
+        return mapped;
     }
 
     private int gettimeofday(Emulator<?> emulator) {
@@ -1397,7 +1403,7 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
 
             log.warn("fstatat64 dirfd={}, pathname={}, statbuf={}, flags={}", dirfd, path, statbuf, flags);
             if (log.isDebugEnabled()) {
-                emulator.attach().debug();
+                emulator.attach().debug("fstatat64 path=" + path);
             }
             emulator.getMemory().setErrno(UnixEmulator.EACCES);
             return -1;
@@ -1435,7 +1441,7 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
             int fd = open(emulator, pathname, oflags);
             if (fd == -1) {
                 if (log.isTraceEnabled()) {
-                    emulator.attach().debug();
+                    emulator.attach().debug("openat failed: " + pathname);
                 }
                 if (verbose) {
                     log.info("openat AT_FDCWD dirfd={}, pathname={}, oflags=0x{}, mode={}", dirfd, pathname, Integer.toHexString(oflags), Integer.toHexString(mode));

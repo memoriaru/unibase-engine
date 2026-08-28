@@ -23,9 +23,12 @@ import com.github.unidbg.memory.MemoryBlock;
 import com.github.unidbg.memory.SvcMemory;
 import com.github.unidbg.pointer.UnidbgPointer;
 import com.github.unidbg.spi.InitFunction;
+import com.github.unidbg.spi.InitFunctionFilter;
 import com.github.unidbg.spi.LibraryFile;
 import com.github.unidbg.utils.Inspector;
 import com.github.unidbg.virtualmodule.VirtualSymbol;
+import com.github.zhkl0228.demumble.DemanglerFactory;
+import com.github.zhkl0228.demumble.GccDemangler;
 import com.sun.jna.Pointer;
 import io.kaitai.MachO;
 import io.kaitai.struct.ByteBufferKaitaiStream;
@@ -87,6 +90,8 @@ public class MachOModule extends Module implements com.github.unidbg.ios.MachO {
     final Map<String, ExportSymbol> exportSymbols;
 
     final Segment[] segments;
+
+    private final InitFunctionFilter initFunctionFilter;
 
     private static final long ARM64E_MASK = 0x7ffffffffffL;
 
@@ -188,7 +193,7 @@ public class MachOModule extends Module implements com.github.unidbg.ios.MachO {
                 long machHeader, boolean executable, MachOLoader loader, List<HookListener> hookListeners, List<String> ordinalList,
                 Section fEHFrameSection, Section fUnwindInfoSection,
                 Map<String, MachO.SegmentCommand64.Section64> objcSections,
-                Segment[] segments, LibraryFile libraryFile) {
+                Segment[] segments, LibraryFile libraryFile, InitFunctionFilter initFunctionFilter) {
         super(name, base, size, neededLibraries, regions, libraryFile);
         this.emulator = emulator;
         this.machO = machO;
@@ -214,6 +219,7 @@ public class MachOModule extends Module implements com.github.unidbg.ios.MachO {
         this.fUnwindInfoSection = fUnwindInfoSection;
         this.objcSections = objcSections;
         this.segments = segments;
+        this.initFunctionFilter = initFunctionFilter;
 
         this.log = LoggerFactory.getLogger("com.github.unidbg.ios." + name);
         this.routines = machO == null ? Collections.emptyList() : parseRoutines(machO);
@@ -265,8 +271,15 @@ public class MachOModule extends Module implements com.github.unidbg.ios.MachO {
                                     log.warn("Replace exist symbol: {}, exportSymbol={}", symbolName, exportSymbol);
                                 }
                             } else {
-                                if (symbolMap.put(symbolName, symbol) != null) {
-                                    log.warn("Replace exist symbol: {}", symbolName);
+                                Symbol old = symbolMap.put(symbolName, symbol);
+                                if (old != null && !old.equals(symbol)) {
+                                    GccDemangler demangler = DemanglerFactory.createDemangler();
+                                    Logger log = LoggerFactory.getLogger(AbstractEmulator.class);
+                                    if (log.isDebugEnabled()) {
+                                        this.log.warn("Replace exist symbol: {}, demangledSymbol={}, old=0x{}, symbol=0x{}, path={}", symbolName, demangler.demangle(symbolName), Long.toHexString(old.getAddress()), Long.toHexString(symbol.getAddress()), path);
+                                    } else {
+                                        this.log.debug("Replace exist symbol: {}, demangledSymbol={}, old=0x{}, symbol=0x{}, path={}", symbolName, demangler.demangle(symbolName), Long.toHexString(old.getAddress()), Long.toHexString(symbol.getAddress()), path);
+                                    }
                                 }
                             }
                         } else {
@@ -347,6 +360,15 @@ public class MachOModule extends Module implements com.github.unidbg.ios.MachO {
         }
 
         Pointer argvPointer = memory.allocateStack(0);
+
+        if (emulator.is64Bit()){
+            long currSP = memory.getStackPoint();
+            long mis = currSP & 0xF;
+            if (mis != 0) {
+                memory.allocateStack((int) mis);
+            }
+        }
+
         return emulateFunction(emulator, machHeader + entryPoint, argc, argvPointer, envPointer, auxvPointer).intValue();
     }
 
@@ -380,7 +402,9 @@ public class MachOModule extends Module implements com.github.unidbg.ios.MachO {
         }
         while (!routines.isEmpty()) {
             InitFunction routine = routines.remove(0);
-            routine.call(emulator);
+            if (initFunctionFilter == null || initFunctionFilter.accept(emulator, routine.getAddress())) {
+                routine.call(emulator);
+            }
         }
     }
 
@@ -391,12 +415,14 @@ public class MachOModule extends Module implements com.github.unidbg.ios.MachO {
 
         while (!initFunctionList.isEmpty()) {
             InitFunction initFunction = initFunctionList.remove(0);
-            initFunction.call(emulator);
+            if(initFunctionFilter == null || initFunctionFilter.accept(emulator, initFunction.getAddress())) {
+                initFunction.call(emulator);
+            }
         }
     }
 
     private void processExportNode(Logger log, ByteBuffer buffer, byte[] cummulativeString, int curStrOffset, Map<String, ExportSymbol> map) {
-        int terminalSize = Utils.readULEB128(buffer).intValue();
+        final int terminalSize = Utils.readULEB128(buffer).intValue();
 
         if (terminalSize != 0) {
             buffer.mark();
@@ -436,7 +462,11 @@ public class MachOModule extends Module implements com.github.unidbg.ios.MachO {
             int edgeStrLen = 0;
             byte b;
             while ((b = buffer.get()) != 0) {
-                cummulativeString[curStrOffset+edgeStrLen] = b;
+                int index = curStrOffset + edgeStrLen;
+                if (index >= cummulativeString.length) {
+                    throw new IllegalStateException("index=" + index + ", length=" + cummulativeString.length + ", module=" + path);
+                }
+                cummulativeString[index] = b;
                 ++edgeStrLen;
             }
             cummulativeString[curStrOffset+edgeStrLen] = 0;
@@ -459,7 +489,7 @@ public class MachOModule extends Module implements com.github.unidbg.ios.MachO {
             buffer = buffer.duplicate();
             buffer.limit((int) (dyldInfoCommand.exportOff() + dyldInfoCommand.exportSize()));
             buffer.position((int) dyldInfoCommand.exportOff());
-            processExportNode(log, buffer.slice(), new byte[4000], 0, map);
+            processExportNode(log, buffer.slice(), new byte[0x4000], 0, map);
         }
         return map;
     }
@@ -841,6 +871,17 @@ public class MachOModule extends Module implements com.github.unidbg.ios.MachO {
     }
 
     @Override
+    public java.util.Collection<com.github.unidbg.Symbol> getExportedSymbols() {
+        java.util.List<com.github.unidbg.Symbol> result = new java.util.ArrayList<>(symbolMap.values());
+        for (java.util.Map.Entry<String, ExportSymbol> entry : exportSymbols.entrySet()) {
+            if (!symbolMap.containsKey(entry.getKey())) {
+                result.add(entry.getValue());
+            }
+        }
+        return result;
+    }
+
+    @Override
     public String toString() {
         return path;
     }
@@ -902,7 +943,8 @@ public class MachOModule extends Module implements com.github.unidbg.ios.MachO {
                 Collections.emptyMap(),
                 Collections.emptyMap(),
                 name, emulator, null, null, null, null, null, 0L, false, null,
-                Collections.emptyList(), Collections.emptyList(), null, null, null, null, null) {
+                Collections.emptyList(), Collections.emptyList(), null, null, null, null, null,
+                null) {
             @Override
             public Symbol findSymbolByName(String name, boolean withDependencies) {
                 UnidbgPointer pointer = symbols.get(name);

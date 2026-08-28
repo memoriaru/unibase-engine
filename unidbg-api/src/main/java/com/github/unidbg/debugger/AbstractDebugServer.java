@@ -287,4 +287,24 @@ public abstract class AbstractDebugServer extends AbstractARMDebugger implements
     protected Keystone createKeystone(boolean isThumb) {
         throw new UnsupportedOperationException();
     }
+
+    @Override
+    protected int resolveRegister(String command, String[] nameOut) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    protected int resolveWriteRegister(String command) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    protected void showWriteRegs(int reg) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    protected void showWriteHelp() {
+        throw new UnsupportedOperationException();
+    }
 }

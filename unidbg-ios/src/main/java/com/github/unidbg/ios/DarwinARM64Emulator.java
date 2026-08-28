@@ -113,6 +113,28 @@ public class DarwinARM64Emulator extends AbstractARM64Emulator<DarwinFileIO> {
     }
 
     @Override
+    public String getObjcClassName(long address) {
+        UnidbgPointer pointer = UnidbgPointer.pointer(this, address);
+        if (pointer == null) {
+            return null;
+        }
+        try {
+            com.github.unidbg.ios.struct.objc.ObjcObject obj =
+                    com.github.unidbg.ios.struct.objc.ObjcObject.create(this, pointer);
+            com.github.unidbg.ios.struct.objc.ObjcClass cls = obj.getObjClass();
+            return cls == null ? null : cls.getName();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    @Override
+    public String dumpObjcClass(String className) {
+        IClassDumper classDumper = ClassDumper.getInstance(this);
+        return classDumper.dumpClass(className);
+    }
+
+    @Override
     protected void searchClass(String keywords) {
         IClassDumper classDumper = ClassDumper.getInstance(this);
         classDumper.searchClass(keywords);
@@ -121,5 +143,10 @@ public class DarwinARM64Emulator extends AbstractARM64Emulator<DarwinFileIO> {
     @Override
     protected void dumpGPBProtobufMsg(String className) {
         System.out.println(GPBDescriptor.toProtobufDef(this, ObjC.getInstance(this), className));
+    }
+
+    @Override
+    public String dumpGPBProtobufDef(String className) {
+        return GPBDescriptor.toProtobufDef(this, ObjC.getInstance(this), className);
     }
 }

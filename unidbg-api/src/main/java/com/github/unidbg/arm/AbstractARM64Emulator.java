@@ -65,7 +65,7 @@ public abstract class AbstractARM64Emulator<T extends NewFileIO> extends Abstrac
             public boolean hook(Backend backend, long address, int size, long value, Object user, UnmappedType unmappedType) {
                 log.warn("{} memory failed: address=0x{}, size={}, value=0x{}", unmappedType, Long.toHexString(address), size, Long.toHexString(value));
                 if (LoggerFactory.getLogger(AbstractEmulator.class).isDebugEnabled()) {
-                    attach().debug();
+                    attach().debug(unmappedType + " memory failed: address=0x" + Long.toHexString(address) + ", size=" + size);
                 }
                 return false;
             }

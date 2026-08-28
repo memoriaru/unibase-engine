@@ -179,4 +179,13 @@ public class Utils {
         return String.format("(%s)", isDouble ? buffer.getDouble() : buffer.getFloat());
     }
 
+    public static int indexOfNullTerminator(byte[] data) {
+        for (int i = 0; i < data.length; i++) {
+            if (data[i] == 0) {
+                return i;
+            }
+        }
+        return data.length;
+    }
+
 }

@@ -40,6 +40,11 @@ public class Function32 extends MainTask {
     }
 
     @Override
+    public long getAddress() {
+        return address;
+    }
+
+    @Override
     public String toThreadString() {
         return "Function32 address=0x" + Long.toHexString(address) + ", arguments=" + Arrays.toString(arguments);
     }

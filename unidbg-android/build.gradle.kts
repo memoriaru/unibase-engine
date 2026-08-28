@@ -6,6 +6,7 @@ dependencies {
     testImplementation(project(":backend:dynarmic"))
     testImplementation(project(":backend:hypervisor"))
     testImplementation(project(":backend:kvm"))
+    testImplementation(project(":unibase-snapshot"))   // 本地基线(baseline-local.md)的快照实测
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.slf4j:slf4j-reload4j:2.0.16")
 }

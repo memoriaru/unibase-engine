@@ -20,6 +20,7 @@ rootProject.name = "unibase-engine"
 // P0 范围: 核心五模块 + hypervisor/kvm(unidbg-android 测试源码引用, 需要参与编译;
 // 运行仅限对应平台: hypervisor=macOS arm64, kvm=linux)
 include(":unidbg-api")
+include(":unibase-snapshot")   // P1 快照原语(context + 内存)
 include(":backend:unicorn2")
 include(":backend:dynarmic")
 include(":backend:hypervisor")

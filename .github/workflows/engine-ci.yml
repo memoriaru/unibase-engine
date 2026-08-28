@@ -39,7 +39,7 @@ jobs:
 
       - name: Android 白名单测试 + Backend 测试 (macos)
         if: matrix.os == 'macos-latest'
-        run: ./gradlew :unidbg-android:test :backend:${{ matrix.backend }}:test --no-daemon
+        run: ./gradlew :unidbg-android:test :unibase-snapshot:test :backend:${{ matrix.backend }}:test --no-daemon
 
       - name: 本地基线入口空跑验证 (smokeTest 无样本时应绿)
         if: matrix.os == 'macos-latest'

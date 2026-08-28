@@ -12,3 +12,8 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.slf4j:slf4j-reload4j:2.0.16")
 }
+
+// HexTest.testStream 写死 Maven 布局相对路径 target/, Gradle 下无效(上游无 CI 的遗留)
+tasks.withType<Test>().configureEach {
+    filter { excludeTestsMatching("com.github.unidbg.HexTest.testStream") }
+}

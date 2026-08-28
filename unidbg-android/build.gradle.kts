@@ -28,3 +28,20 @@ val smokeTest by tasks.registering(Test::class) {
 tasks.register("printTestClasspath") {
     doLast { println(sourceSets["test"].runtimeClasspath.asPath) }
 }
+
+// 上游无 CI, 原生测试长期破损(unicorn 1.0.14 arm32 原生崩溃 / libdynarmic A32 崩溃 /
+// Maven 布局相对路径 target/*)。P0 的 unidbg-android 测试采用显式白名单, 阶段1逐步扩容;
+// 全量套件仍可在本地用排除法排查(见 docs/baseline-local.md)。
+tasks.withType<Test>().configureEach {
+    include(
+        "com/github/unidbg/android/EmulatorTest*",
+        "com/github/unidbg/android/AndroidRelocationTest*",
+        "com/github/unidbg/android/SignalTest*",
+        "com/github/unidbg/android/Signal64Test*",
+        "com/github/unidbg/android/ThreadTest*",
+        "com/github/unidbg/android/BusyBoxTest*",
+        "com/github/unidbg/android/RunExecutable*",
+        "com/github/unidbg/android/struct/*",
+        "unibase/**",
+    )
+}

@@ -44,7 +44,7 @@ subprojects {
             events("failed", "skipped")
             showStandardStreams = false
         }
-        // emulated 工作负载需要更大栈与堆
-        jvmArgs("-Xmx2g")
+        // emulated 工作负载需要更大栈与堆; C1-only 规避 JBR21 C2 编译器崩溃
+        jvmArgs("-Xmx2g", "-XX:TieredStopAtLevel=1")
     }
 }

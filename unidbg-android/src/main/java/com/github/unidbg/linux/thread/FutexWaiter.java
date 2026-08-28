@@ -40,6 +40,12 @@ public abstract class FutexWaiter extends AndroidWaiter {
 
     protected boolean wokenUp;
 
+    @Override
+    public String toString() {
+        return "futex@" + uaddr + " expect!=" + val + " now=" +
+                (uaddr == null ? "?" : uaddr.getInt(0)) + (wokenUp ? " woken" : "");
+    }
+
     public boolean wakeUp(Pointer uaddr) {
         if (this.uaddr.equals(uaddr)) {
             this.wokenUp = true;

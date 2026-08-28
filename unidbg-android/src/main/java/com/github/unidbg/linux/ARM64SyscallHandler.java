@@ -287,7 +287,7 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
                     return;
                 case 174: // getuid
                 case 175: // geteuid
-                    backend.reg_write(Arm64Const.UC_ARM64_REG_X0, 0);
+                    emulator.getBackend().reg_write(Arm64Const.UC_ARM64_REG_X0, 0);
                     return;
                 case 200:
                     backend.reg_write(Arm64Const.UC_ARM64_REG_X0, bind(emulator));
@@ -309,7 +309,7 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
                     return;
                 case 233:
                     syscall = "madvise";
-                    backend.reg_write(Arm64Const.UC_ARM64_REG_X0, 0);
+                    emulator.getBackend().reg_write(Arm64Const.UC_ARM64_REG_X0, 0);
                     return;
                 case 25:
                     backend.reg_write(Arm64Const.UC_ARM64_REG_X0, fcntl(emulator));
@@ -546,18 +546,22 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
         child_stack = child_stack.share(8, 0);
 
         if (threadDispatcherEnabled) {
-            // 接入协作式调度(阶段3): ARM64 pthread 路径与 bionic_clone 同构,
-            // 线程函数 fn(arg) 由调度器驱动执行 —— 此前抛异常假失败导致
-            // SO 的后台线程(种子树初始化)永不运行
+            // ARM64 kernel clone 语义: 子线程从 syscall 返回点继续(x0=0),
+            // 而非 arm32 的 fn/arg 约定。SO 手搓 clone 时 x5/x6 是残留垃圾,
+            // 跳 fn 会跑飞(hongguo 实证: PC=0)
             Pointer tls = context.getPointerArg(3);          // CLONE_SETTLS
             Pointer ctid = context.getPointerArg(4);         // CLONE_CHILD_CLEARTID
-            emulator.getThreadDispatcher().addThread(
-                    new com.github.unidbg.linux.thread.BionicThread(emulator, fn, arg, tls, ctid, threadId));
+            com.github.unidbg.linux.thread.BionicThread t =
+                    new com.github.unidbg.linux.thread.BionicThread(
+                            emulator, fn, arg, tls, ctid, threadId, true);
+            // 保存"svc 之后"的上下文为子线程起点(含 tid 作为父线程 clone 返回值);
+            // 子线程的 X0=0 由 BionicThread.runThread 在 restore 后覆盖
+            t.saveContext(emulator);
+            emulator.getThreadDispatcher().addThread(t);
             if (ctid != null) {
                 ctid.setInt(0, threadId);
             }
-            System.out.println("[THREADS] pthread_clone dispatched tid=" + threadId
-                    + " fn=0x" + Long.toHexString(fn.peer) + " tls=" + tls);
+            System.out.println("[THREADS] pthread_clone dispatched(continueMode) tid=" + threadId);
             return threadId;
         }
 
@@ -662,11 +666,16 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
             if (verbose) {
                 System.out.printf("bionic_clone fn=%s, LR=%s%n", fn, context.getLRPointer());
             }
-            System.out.println("[THREADS] bionic_clone dispatched tid=" + threadId + " fn=" + fn
-                    + " tls=" + tls);
-            // BionicThread 用真实 TLS(CLONE_SETTLS), 不按 Marshmallow 固定偏移猜布局
-            emulator.getThreadDispatcher().addThread(new com.github.unidbg.linux.thread.BionicThread(
-                    emulator, fn, arg, tls, ctid, threadId));
+            // 实验(P3): ARM64 统一 continueMode —— child_stack[0]==fn 判据在
+            // SO 手搓 clone 下同样成立(libc wrapper 对任何调用者都压栈 fn/arg),
+            // fnMode 对手搓 clone 会跑飞 PC=0(THREADDUMP: start_routine=0)
+            System.out.println("[THREADS] bionic_clone dispatched(continueMode exp) tid=" + threadId);
+            com.github.unidbg.linux.thread.BionicThread t =
+                    new com.github.unidbg.linux.thread.BionicThread(
+                            emulator, fn, arg, tls, ctid, threadId, true);
+            emulator.getBackend().reg_write(Arm64Const.UC_ARM64_REG_X0, 0);
+            t.saveContext(emulator);
+            emulator.getThreadDispatcher().addThread(t);
         }
         ctid.setInt(0, threadId);
         return threadId;

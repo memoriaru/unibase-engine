@@ -10,30 +10,40 @@ import unicorn.Arm64Const;
 import unicorn.ArmConst;
 
 /**
- * 通用 bionic 线程(阶段3): 与 MarshmallowThread(按 Android M 的
- * pthread_internal_t 固定偏移猜 TLS)不同, 直接使用 clone 系统调用
- * CLONE_SETTLS 传入的真实 TLS 指针 —— 布局由 SO 的 libc 调用方排好,
- * 不依赖 bionic 版本。
+ * 通用 bionic 线程(阶段3): ARM64 clone 语义的正确实现。
  *
- * 背景: 新版 bionic 的 __thread_entry 从 TPIDR_EL0 指向的
- * pthread_internal_t 按 API 版本相关偏移读 start_routine; MarshmallowThread
- * 的 arg.share(0xb0) 是 Android 6.0 布局, 在新 bionic 下读到 0 →
- * 线程跑飞 PC=0(hongguo 实证)。
+ * ARM64 kernel clone 与 arm32 不同: 子线程**从 syscall 返回点继续执行**
+ * (x5/x6 不是 fn/arg —— 那是 arm32 __bionic_clone.S 的约定)。两种模式:
+ *  1. fnMode(经 libc __pthread_start): libc pthread_create 路径, X0=arg,
+ *     TLS=CLONE_SETTLS 值
+ *  2. continueMode(SO 手搓 syscall clone): 子线程上下文 = 主线程 clone
+ *     时的上下文副本(PC=svc 之后), x0=0(kernel 语义: 子线程 clone 返回 0)
+ *
+ * hongguo 实证: 加固 SO 手搓 clone, fnMode 跳进 __pthread_start 读到
+ * start_routine=0 → PC=0 跑飞; continueMode 才是正确语义。
  */
 public class BionicThread extends ThreadTask {
 
     private final UnidbgPointer fn;
     private final UnidbgPointer arg;
     private final Pointer tls;
+    private final boolean continueMode;
     private Pointer tidptr;
 
     public BionicThread(Emulator<?> emulator, UnidbgPointer fn, UnidbgPointer arg,
                         Pointer tls, Pointer tidptr, int tid) {
+        this(emulator, fn, arg, tls, tidptr, tid, false);
+    }
+
+    /** continueMode=true: 以当前 emulator 上下文为子线程起点(kernel clone 语义)。 */
+    public BionicThread(Emulator<?> emulator, UnidbgPointer fn, UnidbgPointer arg,
+                        Pointer tls, Pointer tidptr, int tid, boolean continueMode) {
         super(tid, emulator.getReturnAddress());
         this.fn = fn;
         this.arg = arg;
         this.tls = tls;
         this.tidptr = tidptr;
+        this.continueMode = continueMode;
     }
 
     @Override
@@ -51,8 +61,28 @@ public class BionicThread extends ThreadTask {
 
     @Override
     protected Number runThread(AbstractEmulator<?> emulator) {
+        if (continueMode) {
+            // kernel clone 语义: 子线程上下文已在 handler 内 saveContext(PC=svc 后)。
+            // 恢复后覆盖 X0=0(子线程 clone 返回值) —— 必须在 restore 之后,
+            // 否则被保存的 tid 值覆盖(父/子身份颠倒)
+            restoreContext(emulator);
+            Backend backend0 = emulator.getBackend();
+            backend0.reg_write(unicorn.Arm64Const.UC_ARM64_REG_X0, 0);
+            return emulator.emulate(backend0.reg_read(unicorn.Arm64Const.UC_ARM64_REG_PC).longValue(), until);
+        }
         Backend backend = emulator.getBackend();
         UnidbgPointer stack = allocateStack(emulator);
+        // 诊断(P3): dump pthread_internal_t 前 0x40 字节 —— 定位 start_routine 实际偏移
+        if (Boolean.getBoolean("unibase.threaddump") && arg != null) {
+            byte[] head = arg.getByteArray(0, 0x40);
+            StringBuilder sb = new StringBuilder("[THREADDUMP] tid=" + id + " arg=" + arg + " tls=" + tls + "\n");
+            for (int off = 0; off < 0x40; off += 8) {
+                long v = 0;
+                for (int b = 7; b >= 0; b--) v = (v << 8) | (head[off + b] & 0xFFL);
+                if (v != 0) sb.append(String.format("  +0x%02x = 0x%x%n", off, v));
+            }
+            System.out.print(sb);
+        }
         if (emulator.is32Bit()) {
             backend.reg_write(ArmConst.UC_ARM_REG_R0, UnidbgPointer.nativeValue(arg));
             backend.reg_write(ArmConst.UC_ARM_REG_SP, stack.peer);

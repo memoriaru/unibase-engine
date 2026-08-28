@@ -136,16 +136,22 @@ public class DalvikVM64 extends BaseVM implements VM {
                 if (verbose || verboseMethodOperation) {
                     System.out.printf("JNIEnv->GetSuperClass(%s) was called from %s%n", dvmClass, context.getLRPointer());
                 }
+                // JNI 规范: GetSuperclass(Object) 返回 NULL 而非异常 —— 加固 so 在 JNI_OnLoad
+                // 中遍历继承链, Object 命中是正常路径(原抛 BackendException 迫使用户内存 patch)
                 if (dvmClass.getClassName().equals("java/lang/Object")) {
-                    log.debug("JNIEnv->GetSuperClass was called, class = {} According to Java Native Interface Specification, If clazz specifies the class Object, returns NULL.", dvmClass.getClassName());
-                    throw new BackendException();
+                    if (log.isDebugEnabled()) {
+                        log.debug("JNIEnv->GetSuperClass(class=Object) returns NULL per JNI spec.");
+                    }
+                    return 0;
                 }
                 DvmClass superClass = dvmClass.getSuperclass();
                 if (superClass == null) {
+                    // 未声明父类(桩 resolveClass 未给 superClass): 按 ART 语义回落 java/lang/Object,
+                    // so 若依赖精确父类应显式 resolveClass 声明继承链
                     if (log.isDebugEnabled()) {
-                        log.debug("JNIEnv->GetSuperClass was called, class = {}, superClass get failed.", dvmClass.getClassName());
+                        log.debug("JNIEnv->GetSuperClass was called, class = {}, superClass undeclared, fallback to java/lang/Object.", dvmClass.getClassName());
                     }
-                    throw new BackendException();
+                    return resolveClass("java/lang/Object").hashCode();
                 } else {
                     if (log.isDebugEnabled()) {
                         log.debug("JNIEnv->GetSuperClass was called, class = {}, superClass = {}", dvmClass.getClassName(), superClass.getClassName());

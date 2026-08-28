@@ -1,7 +1,7 @@
 dependencies {
     api(project(":unidbg-api"))
     api("io.kaitai:kaitai-struct-runtime:0.8")
-    api("com.googlecode.plist:dd-plist:1.23")
+    api("com.googlecode.plist:dd-plist:1.29")
     testImplementation(project(":backend:unicorn2"))
     testImplementation(project(":backend:dynarmic"))
     testImplementation(project(":backend:hypervisor"))

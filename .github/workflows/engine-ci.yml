@@ -29,9 +29,15 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
+      # 依赖缓存: 避免 4 job 并发全量拉 Maven Central 触发 429 限流
+      - uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches/modules-2
+          key: gradle-deps-${{ runner.os }}-v1
+          restore-keys: gradle-deps-${{ runner.os }}-
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Assemble (release=8, temurin 21 工具链)
+      - name: Assemble (release 21, temurin 工具链)
         run: ./gradlew assemble --no-daemon
 
       - name: unidbg-api 测试

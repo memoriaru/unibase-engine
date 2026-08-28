@@ -551,9 +551,8 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
             // SO 的后台线程(种子树初始化)永不运行
             Pointer tls = context.getPointerArg(3);          // CLONE_SETTLS
             Pointer ctid = context.getPointerArg(4);         // CLONE_CHILD_CLEARTID
-            UnidbgPointer thread = tls instanceof UnidbgPointer ? (UnidbgPointer) tls : null;
             emulator.getThreadDispatcher().addThread(
-                    new com.github.unidbg.linux.thread.MarshmallowThread(emulator, fn, thread, ctid, threadId));
+                    new com.github.unidbg.linux.thread.BionicThread(emulator, fn, arg, tls, ctid, threadId));
             if (ctid != null) {
                 ctid.setInt(0, threadId);
             }
@@ -663,8 +662,11 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
             if (verbose) {
                 System.out.printf("bionic_clone fn=%s, LR=%s%n", fn, context.getLRPointer());
             }
-            System.out.println("[THREADS] bionic_clone dispatched tid=" + threadId + " fn=" + fn);
-            emulator.getThreadDispatcher().addThread(new MarshmallowThread(emulator, fn, arg, ctid, threadId));
+            System.out.println("[THREADS] bionic_clone dispatched tid=" + threadId + " fn=" + fn
+                    + " tls=" + tls);
+            // BionicThread 用真实 TLS(CLONE_SETTLS), 不按 Marshmallow 固定偏移猜布局
+            emulator.getThreadDispatcher().addThread(new com.github.unidbg.linux.thread.BionicThread(
+                    emulator, fn, arg, tls, ctid, threadId));
         }
         ctid.setInt(0, threadId);
         return threadId;

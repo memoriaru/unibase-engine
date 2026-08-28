@@ -92,7 +92,13 @@ public class BionicThread extends ThreadTask {
                         ((UnidbgPointer) tls).peer);
             }
             backend.reg_write(unicorn.Arm64Const.UC_ARM64_REG_LR, until);
-            return emulator.emulate(rawEntryPC, until);
+            long t0 = System.currentTimeMillis();
+            System.out.println("[THREADRUN] tid=" + id + " start pc=0x"
+                    + Long.toHexString(rawEntryPC));
+            Number ret = emulator.emulate(rawEntryPC, until);
+            System.out.printf("[THREADRUN] tid=%d exited ret=%s (%.0fms)%n",
+                    id, ret, (System.currentTimeMillis() - t0) / 1e6);
+            return ret;
         }
         if (continueMode) {
             // kernel clone 语义: 子线程上下文已在 handler 内 saveContext(PC=svc 后)。

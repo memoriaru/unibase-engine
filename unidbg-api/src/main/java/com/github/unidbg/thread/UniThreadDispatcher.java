@@ -129,6 +129,13 @@ public class UniThreadDispatcher implements ThreadDispatcher {
         try {
             long start = System.currentTimeMillis();
             while (true) {
+                // 先把新创建的后台线程搬入调度队列(主任务完成后 drain 的关键 ——
+                // 此前 threadTaskList 永远不会被搬入, 子线程让出后也无人继续调度)
+                Collections.reverse(threadTaskList);
+                for (Iterator<ThreadTask> it = threadTaskList.iterator(); it.hasNext(); ) {
+                    taskList.add(0, it.next());
+                    it.remove();
+                }
                 if (taskList.isEmpty() && mainDone) {
                     // 主任务已完成且无剩余任务 —— 正常收尾
                     return mainRet;
@@ -219,6 +226,10 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                     // 无进展保护: 本轮没有任何任务可调度(全部 waiter 阻塞/挂起) → 退出
                     if (dispatchedThisRound == 0) {
                         if (++idleRounds >= 3) {
+                            for (Task t : taskList) {
+                                log.info("abandoned: {}, waiter={}, saved={}",
+                                        t + " waiter=" + t.getWaiter() + " saved=" + t.isContextSaved());
+                            }
                             log.info("drain idle: no runnable background task, {} abandoned",
                                     taskList.size());
                             return mainRet;
@@ -228,21 +239,10 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                     }
                 }
                 dispatchedThisRound = 0;
-                Collections.reverse(threadTaskList);
-                for (Iterator<ThreadTask> iterator = threadTaskList.iterator(); iterator.hasNext(); ) {
-                    taskList.add(0, iterator.next());
-                    iterator.remove();
-                }
 
                 if (timeout > 0 && unit != null &&
                         System.currentTimeMillis() - start >= unit.toMillis(timeout)) {
                     return mainRet;
-                }
-                if (taskList.isEmpty()) {
-                    if (mainDone) {
-                        return mainRet;
-                    }
-                    return null;
                 }
 
                 if (log.isDebugEnabled()) {

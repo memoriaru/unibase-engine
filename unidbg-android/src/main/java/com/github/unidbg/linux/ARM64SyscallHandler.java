@@ -551,8 +551,10 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
             // 跳 fn 会跑飞(hongguo 实证: PC=0)
             Pointer tls = context.getPointerArg(3);          // CLONE_SETTLS
             Pointer ctid = context.getPointerArg(4);         // CLONE_CHILD_CLEARTID
+            // 实测 svc hook 时 PC=svc+8(越过 svc 与 cbz); 子线程返回点=cbz(0x1bde8)=PC-4,
+            // 从 cmn 起步会 4 条指令后 ret 到 until 立即退出(0ms 假退出实证)
             long entryPC = emulator.getBackend()
-                    .reg_read(Arm64Const.UC_ARM64_REG_PC).longValue() + 4; // svc 后返回点
+                    .reg_read(Arm64Const.UC_ARM64_REG_PC).longValue() - 4;
             UnidbgPointer childStack = context.getPointerArg(1); // wrapper 已压 fn/arg
             com.github.unidbg.linux.thread.BionicThread t =
                     com.github.unidbg.linux.thread.BionicThread.rawContext(
@@ -668,7 +670,7 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
             }
             // rawContext(P3): 与 pthread_clone 分支统一 —— kernel clone 语义,
             // 子线程 = {PC: 返回点, SP: child_stack, X0: 0, TLS}
-            long entryPC = emulator.getBackend().reg_read(Arm64Const.UC_ARM64_REG_PC).longValue() + 4;
+            long entryPC = emulator.getBackend().reg_read(Arm64Const.UC_ARM64_REG_PC).longValue();
             UnidbgPointer childStack = context.getPointerArg(1);
             com.github.unidbg.linux.thread.BionicThread t =
                     com.github.unidbg.linux.thread.BionicThread.rawContext(

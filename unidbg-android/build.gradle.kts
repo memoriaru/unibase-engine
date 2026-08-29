@@ -43,6 +43,7 @@ tasks.withType<Test>().configureEach {
         "com/github/unidbg/android/Thread64Test*",
         "com/github/unidbg/android/PageSizeTest*",
         "com/github/unidbg/android/ModernElfTest*",
+        "com/github/unidbg/android/FastTracerBinaryTest*",
         "com/github/unidbg/android/BusyBoxTest*",
         "com/github/unidbg/android/RunExecutable*",
         "com/github/unidbg/android/struct/*",

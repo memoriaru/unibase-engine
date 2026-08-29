@@ -48,17 +48,13 @@ public abstract class DynarmicBackend extends FastBackend implements Backend, Dy
     }
 
     @Override
-    public void handleMemoryReadFailed(long vaddr, int size) {
-        if (eventMemHookNotifier != null) {
-            eventMemHookNotifier.handleMemoryReadFailed(this, vaddr, size);
-        }
+    public boolean handleMemoryReadFailed(long vaddr, int size) {
+        return eventMemHookNotifier != null && eventMemHookNotifier.handleMemoryReadFailed(this, vaddr, size);
     }
 
     @Override
-    public void handleMemoryWriteFailed(long vaddr, int size) {
-        if (eventMemHookNotifier != null) {
-            eventMemHookNotifier.handleMemoryWriteFailed(this, vaddr, size);
-        }
+    public boolean handleMemoryWriteFailed(long vaddr, int size) {
+        return eventMemHookNotifier != null && eventMemHookNotifier.handleMemoryWriteFailed(this, vaddr, size);
     }
 
     @Override

@@ -80,6 +80,22 @@ static inline void *get_memory(khash_t(memory) *memory, u64 vaddr, size_t num_pa
     return page ? &page[vaddr & DYN_PAGE_MASK] : NULL;
 }
 
+// unibase(阶段3 事项2): 未映射访问统一降级 —— 通知 Java(EventMemHook 可能 lazy
+// 映射)后由调用方重查页表, 仍未映射则 WARN+假值继续(对齐 unicorn2 "WARN+继续"
+// 语义, 替代上游 abort() 整进程中止)。
+static void notify_memory_read_failed(jobject callback, u64 vaddr, int size) {
+    JNIEnv *env;
+    cachedJVM->AttachCurrentThread((void **)&env, NULL);
+    env->CallBooleanMethod(callback, handleMemoryReadFailed, (jlong)vaddr, size);
+    cachedJVM->DetachCurrentThread();
+}
+static void notify_memory_write_failed(jobject callback, u64 vaddr, int size) {
+    JNIEnv *env;
+    cachedJVM->AttachCurrentThread((void **)&env, NULL);
+    env->CallBooleanMethod(callback, handleMemoryWriteFailed, (jlong)vaddr, size);
+    cachedJVM->DetachCurrentThread();
+}
+
 class DynarmicCallbacks32 final : public Dynarmic::A32::UserCallbacks {
 private:
     ~DynarmicCallbacks32() = default;
@@ -112,12 +128,13 @@ public:
         if(dest) {
             return dest[0];
         } else {
-            fprintf(stderr, "MemoryRead8[%s->%s:%d]: vaddr=0x%x\n", __FILE__, __func__, __LINE__, vaddr);
-            JNIEnv *env;
-            cachedJVM->AttachCurrentThread((void **)&env, NULL);
-            env->CallVoidMethod(callback, handleMemoryReadFailed, vaddr, 1);
-            cachedJVM->DetachCurrentThread();
-            abort();
+            notify_memory_read_failed(callback, vaddr, 1);
+            dest = (u8 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
+            if(dest) {
+                return dest[0];
+            }
+            fprintf(stderr, "WARN dynarmic MemoryRead8 unmapped: vaddr=0x%x\n", vaddr);
+            return 0;
             return 0;
         }
     }
@@ -131,12 +148,13 @@ public:
         if(dest) {
             return dest[0];
         } else {
-            fprintf(stderr, "MemoryRead16[%s->%s:%d]: vaddr=0x%x\n", __FILE__, __func__, __LINE__, vaddr);
-            JNIEnv *env;
-            cachedJVM->AttachCurrentThread((void **)&env, NULL);
-            env->CallVoidMethod(callback, handleMemoryReadFailed, vaddr, 2);
-            cachedJVM->DetachCurrentThread();
-            abort();
+            notify_memory_read_failed(callback, vaddr, 2);
+            dest = (u16 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
+            if(dest) {
+                return dest[0];
+            }
+            fprintf(stderr, "WARN dynarmic MemoryRead16 unmapped: vaddr=0x%x\n", vaddr);
+            return 0;
             return 0;
         }
     }
@@ -151,12 +169,13 @@ public:
 //            printf("MemoryRead32[%s->%s:%d]: vaddr=0x%x, value=0x%x\n", __FILE__, __func__, __LINE__, vaddr, dest[0]);
             return dest[0];
         } else {
-            fprintf(stderr, "MemoryRead32[%s->%s:%d]: vaddr=0x%x\n", __FILE__, __func__, __LINE__, vaddr);
-            JNIEnv *env;
-            cachedJVM->AttachCurrentThread((void **)&env, NULL);
-            env->CallVoidMethod(callback, handleMemoryReadFailed, vaddr, 4);
-            cachedJVM->DetachCurrentThread();
-            abort();
+            notify_memory_read_failed(callback, vaddr, 4);
+            dest = (u32 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
+            if(dest) {
+                return dest[0];
+            }
+            fprintf(stderr, "WARN dynarmic MemoryRead32 unmapped: vaddr=0x%x\n", vaddr);
+            return 0;
             return 0;
         }
     }
@@ -170,12 +189,13 @@ public:
         if(dest) {
             return dest[0];
         } else {
-            fprintf(stderr, "MemoryRead64[%s->%s:%d]: vaddr=0x%x\n", __FILE__, __func__, __LINE__, vaddr);
-            JNIEnv *env;
-            cachedJVM->AttachCurrentThread((void **)&env, NULL);
-            env->CallVoidMethod(callback, handleMemoryReadFailed, vaddr, 8);
-            cachedJVM->DetachCurrentThread();
-            abort();
+            notify_memory_read_failed(callback, vaddr, 8);
+            dest = (u64 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
+            if(dest) {
+                return dest[0];
+            }
+            fprintf(stderr, "WARN dynarmic MemoryRead64 unmapped: vaddr=0x%x\n", vaddr);
+            return 0;
             return 0;
         }
     }
@@ -185,12 +205,13 @@ public:
         if(dest) {
             dest[0] = value;
         } else {
-            fprintf(stderr, "MemoryWrite8[%s->%s:%d]: vaddr=0x%x\n", __FILE__, __func__, __LINE__, vaddr);
-            JNIEnv *env;
-            cachedJVM->AttachCurrentThread((void **)&env, NULL);
-            env->CallVoidMethod(callback, handleMemoryWriteFailed, vaddr, 1);
-            cachedJVM->DetachCurrentThread();
-            abort();
+            notify_memory_write_failed(callback, vaddr, 1);
+            dest = (u8 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
+            if(dest) {
+                dest[0] = value;
+                return;
+            }
+            fprintf(stderr, "WARN dynarmic MemoryWrite8 unmapped: vaddr=0x%x\n", vaddr);
         }
     }
     void MemoryWrite16(u32 vaddr, u16 value) override {
@@ -203,12 +224,13 @@ public:
         if(dest) {
             dest[0] = value;
         } else {
-            fprintf(stderr, "MemoryWrite16[%s->%s:%d]: vaddr=0x%x\n", __FILE__, __func__, __LINE__, vaddr);
-            JNIEnv *env;
-            cachedJVM->AttachCurrentThread((void **)&env, NULL);
-            env->CallVoidMethod(callback, handleMemoryWriteFailed, vaddr, 2);
-            cachedJVM->DetachCurrentThread();
-            abort();
+            notify_memory_write_failed(callback, vaddr, 2);
+            dest = (u16 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
+            if(dest) {
+                dest[0] = value;
+                return;
+            }
+            fprintf(stderr, "WARN dynarmic MemoryWrite16 unmapped: vaddr=0x%x\n", vaddr);
         }
     }
     void MemoryWrite32(u32 vaddr, u32 value) override {
@@ -221,12 +243,13 @@ public:
         if(dest) {
             dest[0] = value;
         } else {
-            fprintf(stderr, "MemoryWrite32[%s->%s:%d]: vaddr=0x%x\n", __FILE__, __func__, __LINE__, vaddr);
-            JNIEnv *env;
-            cachedJVM->AttachCurrentThread((void **)&env, NULL);
-            env->CallVoidMethod(callback, handleMemoryWriteFailed, vaddr, 4);
-            cachedJVM->DetachCurrentThread();
-            abort();
+            notify_memory_write_failed(callback, vaddr, 4);
+            dest = (u32 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
+            if(dest) {
+                dest[0] = value;
+                return;
+            }
+            fprintf(stderr, "WARN dynarmic MemoryWrite32 unmapped: vaddr=0x%x\n", vaddr);
         }
     }
     void MemoryWrite64(u32 vaddr, u64 value) override {
@@ -239,12 +262,13 @@ public:
         if(dest) {
             dest[0] = value;
         } else {
-            fprintf(stderr, "MemoryWrite64[%s->%s:%d]: vaddr=0x%x\n", __FILE__, __func__, __LINE__, vaddr);
-            JNIEnv *env;
-            cachedJVM->AttachCurrentThread((void **)&env, NULL);
-            env->CallVoidMethod(callback, handleMemoryWriteFailed, vaddr, 8);
-            cachedJVM->DetachCurrentThread();
-            abort();
+            notify_memory_write_failed(callback, vaddr, 8);
+            dest = (u64 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
+            if(dest) {
+                dest[0] = value;
+                return;
+            }
+            fprintf(stderr, "WARN dynarmic MemoryWrite64 unmapped: vaddr=0x%x\n", vaddr);
         }
     }
 
@@ -349,12 +373,13 @@ public:
         if(dest) {
             return dest[0];
         } else {
-            fprintf(stderr, "MemoryRead8[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
-            JNIEnv *env;
-            cachedJVM->AttachCurrentThread((void **)&env, NULL);
-            env->CallVoidMethod(callback, handleMemoryReadFailed, vaddr, 1);
-            cachedJVM->DetachCurrentThread();
-            abort();
+            notify_memory_read_failed(callback, vaddr, 1);
+            dest = (u8 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
+            if(dest) {
+                return dest[0];
+            }
+            fprintf(stderr, "WARN dynarmic MemoryRead8 unmapped: vaddr=0x%llx\n", (unsigned long long)vaddr);
+            return 0;
             return 0;
         }
     }
@@ -368,12 +393,13 @@ public:
         if(dest) {
             return dest[0];
         } else {
-            fprintf(stderr, "MemoryRead16[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
-            JNIEnv *env;
-            cachedJVM->AttachCurrentThread((void **)&env, NULL);
-            env->CallVoidMethod(callback, handleMemoryReadFailed, vaddr, 2);
-            cachedJVM->DetachCurrentThread();
-            abort();
+            notify_memory_read_failed(callback, vaddr, 2);
+            dest = (u16 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
+            if(dest) {
+                return dest[0];
+            }
+            fprintf(stderr, "WARN dynarmic MemoryRead16 unmapped: vaddr=0x%llx\n", (unsigned long long)vaddr);
+            return 0;
             return 0;
         }
     }
@@ -387,12 +413,13 @@ public:
         if(dest) {
             return dest[0];
         } else {
-            fprintf(stderr, "MemoryRead32[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
-            JNIEnv *env;
-            cachedJVM->AttachCurrentThread((void **)&env, NULL);
-            env->CallVoidMethod(callback, handleMemoryReadFailed, vaddr, 4);
-            cachedJVM->DetachCurrentThread();
-            abort();
+            notify_memory_read_failed(callback, vaddr, 4);
+            dest = (u32 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
+            if(dest) {
+                return dest[0];
+            }
+            fprintf(stderr, "WARN dynarmic MemoryRead32 unmapped: vaddr=0x%llx\n", (unsigned long long)vaddr);
+            return 0;
             return 0;
         }
     }
@@ -406,12 +433,13 @@ public:
         if(dest) {
             return dest[0];
         } else {
-            fprintf(stderr, "MemoryRead64[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
-            JNIEnv *env;
-            cachedJVM->AttachCurrentThread((void **)&env, NULL);
-            env->CallVoidMethod(callback, handleMemoryReadFailed, vaddr, 8);
-            cachedJVM->DetachCurrentThread();
-            abort();
+            notify_memory_read_failed(callback, vaddr, 8);
+            dest = (u64 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
+            if(dest) {
+                return dest[0];
+            }
+            fprintf(stderr, "WARN dynarmic MemoryRead64 unmapped: vaddr=0x%llx\n", (unsigned long long)vaddr);
+            return 0;
             return 0;
         }
     }
@@ -424,12 +452,13 @@ public:
         if(dest) {
             dest[0] = value;
         } else {
-            fprintf(stderr, "MemoryWrite8[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
-            JNIEnv *env;
-            cachedJVM->AttachCurrentThread((void **)&env, NULL);
-            env->CallVoidMethod(callback, handleMemoryWriteFailed, vaddr, 1);
-            cachedJVM->DetachCurrentThread();
-            abort();
+            notify_memory_write_failed(callback, vaddr, 1);
+            dest = (u8 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
+            if(dest) {
+                dest[0] = value;
+                return;
+            }
+            fprintf(stderr, "WARN dynarmic MemoryWrite8 unmapped: vaddr=0x%llx\n", (unsigned long long)vaddr);
         }
     }
     void MemoryWrite16(u64 vaddr, u16 value) override {
@@ -442,12 +471,13 @@ public:
         if(dest) {
             dest[0] = value;
         } else {
-            fprintf(stderr, "MemoryWrite16[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
-            JNIEnv *env;
-            cachedJVM->AttachCurrentThread((void **)&env, NULL);
-            env->CallVoidMethod(callback, handleMemoryWriteFailed, vaddr, 2);
-            cachedJVM->DetachCurrentThread();
-            abort();
+            notify_memory_write_failed(callback, vaddr, 2);
+            dest = (u16 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
+            if(dest) {
+                dest[0] = value;
+                return;
+            }
+            fprintf(stderr, "WARN dynarmic MemoryWrite16 unmapped: vaddr=0x%llx\n", (unsigned long long)vaddr);
         }
     }
     void MemoryWrite32(u64 vaddr, u32 value) override {
@@ -460,12 +490,13 @@ public:
         if(dest) {
             dest[0] = value;
         } else {
-            fprintf(stderr, "MemoryWrite32[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
-            JNIEnv *env;
-            cachedJVM->AttachCurrentThread((void **)&env, NULL);
-            env->CallVoidMethod(callback, handleMemoryWriteFailed, vaddr, 4);
-            cachedJVM->DetachCurrentThread();
-            abort();
+            notify_memory_write_failed(callback, vaddr, 4);
+            dest = (u32 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
+            if(dest) {
+                dest[0] = value;
+                return;
+            }
+            fprintf(stderr, "WARN dynarmic MemoryWrite32 unmapped: vaddr=0x%llx\n", (unsigned long long)vaddr);
         }
     }
     void MemoryWrite64(u64 vaddr, u64 value) override {
@@ -478,12 +509,13 @@ public:
         if(dest) {
             dest[0] = value;
         } else {
-            fprintf(stderr, "MemoryWrite64[%s->%s:%d]: vaddr=%p\n", __FILE__, __func__, __LINE__, (void*)vaddr);
-            JNIEnv *env;
-            cachedJVM->AttachCurrentThread((void **)&env, NULL);
-            env->CallVoidMethod(callback, handleMemoryWriteFailed, vaddr, 8);
-            cachedJVM->DetachCurrentThread();
-            abort();
+            notify_memory_write_failed(callback, vaddr, 8);
+            dest = (u64 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
+            if(dest) {
+                dest[0] = value;
+                return;
+            }
+            fprintf(stderr, "WARN dynarmic MemoryWrite64 unmapped: vaddr=0x%llx\n", (unsigned long long)vaddr);
         }
     }
     void MemoryWrite128(u64 vaddr, Dynarmic::A64::Vector value) override {
@@ -1580,8 +1612,8 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
   callSVC = env->GetMethodID(cDynarmicCallback, "callSVC", "(JI)V");
   handleInterpreterFallback = env->GetMethodID(cDynarmicCallback, "handleInterpreterFallback", "(JI)Z");
   handleExceptionRaised = env->GetMethodID(cDynarmicCallback, "handleExceptionRaised", "(JI)V");
-  handleMemoryReadFailed = env->GetMethodID(cDynarmicCallback, "handleMemoryReadFailed", "(JI)V");
-  handleMemoryWriteFailed = env->GetMethodID(cDynarmicCallback, "handleMemoryWriteFailed", "(JI)V");
+  handleMemoryReadFailed = env->GetMethodID(cDynarmicCallback, "handleMemoryReadFailed", "(JI)Z");
+  handleMemoryWriteFailed = env->GetMethodID(cDynarmicCallback, "handleMemoryWriteFailed", "(JI)Z");
   cachedJVM = vm;
 
   jclass localDynarmicException = env->FindClass("com/github/unidbg/arm/backend/dynarmic/DynarmicException");

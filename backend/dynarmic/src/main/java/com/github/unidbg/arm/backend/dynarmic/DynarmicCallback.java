@@ -11,7 +11,13 @@ public interface DynarmicCallback {
 
     void handleExceptionRaised(long pc, int exception);
 
-    void handleMemoryReadFailed(long vaddr, int size);
-    void handleMemoryWriteFailed(long vaddr, int size);
+    /**
+     * 未映射读: native 侧通知后重查页表。返回<code>true</code>表示 hook 已处理
+     * (通常已 lazy 映射); 返回<code>false</code>时 native 侧 WARN+假值继续
+     * (对齐 unicorn2 语义, 替代上游 abort(), 见 dynarmic.cpp notify_memory_*)。
+     */
+    boolean handleMemoryReadFailed(long vaddr, int size);
+
+    boolean handleMemoryWriteFailed(long vaddr, int size);
 
 }

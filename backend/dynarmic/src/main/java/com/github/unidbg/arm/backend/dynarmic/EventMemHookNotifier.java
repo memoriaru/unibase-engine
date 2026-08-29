@@ -16,15 +16,18 @@ public class EventMemHookNotifier {
         this.user_data = user_data;
     }
 
-    public void handleMemoryReadFailed(Backend backend, long vaddr, int size) {
+    /** @return hook 是否已处理(通常已 lazy 映射); false 时 native 侧 WARN+假值继续 */
+    public boolean handleMemoryReadFailed(Backend backend, long vaddr, int size) {
         if ((type & UnicornConst.UC_HOOK_MEM_READ_UNMAPPED) != 0) {
-            callback.hook(backend, vaddr, size, 0, user_data, EventMemHook.UnmappedType.Read);
+            return callback.hook(backend, vaddr, size, 0, user_data, EventMemHook.UnmappedType.Read);
         }
+        return false;
     }
 
-    public void handleMemoryWriteFailed(Backend backend, long vaddr, int size) {
+    public boolean handleMemoryWriteFailed(Backend backend, long vaddr, int size) {
         if ((type & UnicornConst.UC_HOOK_MEM_WRITE_UNMAPPED) != 0) {
-            callback.hook(backend, vaddr, size, 0, user_data, EventMemHook.UnmappedType.Write);
+            return callback.hook(backend, vaddr, size, 0, user_data, EventMemHook.UnmappedType.Write);
         }
+        return false;
     }
 }

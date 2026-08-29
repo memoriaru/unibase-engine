@@ -16,3 +16,13 @@ tasks.withType<Test>().configureEach {
     include("unibase/__none__")
     filter { setFailOnNoMatchingTests(false) }
 }
+
+// 阶段4 ① spike: iOS 加载链本地验证(UnityFramework 样本, 缺失时 skip, CI 空跑)
+val iosSpike by tasks.registering(Test::class) {
+    group = "verification"
+    description = "iOS 加载链 spike(UnityFramework), 需要专有样本, CI 上空跑"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("unibase/ios/**")
+    filter { setFailOnNoMatchingTests(false) }
+}

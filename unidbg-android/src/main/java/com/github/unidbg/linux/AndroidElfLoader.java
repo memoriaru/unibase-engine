@@ -495,6 +495,24 @@ public class AndroidElfLoader extends AbstractLoader<AndroidFileIO> implements M
 
         List<ModuleSymbol> list = new ArrayList<>();
         List<ModuleSymbol> resolvedSymbols = new ArrayList<>();
+        // TLS(阶段3 · Android 现代化): 为含 PT_TLS 的 so 分配 TLS 槽并复制 .tdata
+        java.nio.ByteBuffer fileBuf = libraryFile.mapBuffer();
+        for (int phi = 0; phi < elfFile.num_ph; phi++) {
+            ElfSegment seg = elfFile.getProgramHeader(phi);
+            if (seg.type == ElfSegment.PT_TLS) {
+                long tlsAlign = seg.alignment == 0 ? 16 : seg.alignment;
+                byte[] initData = new byte[(int) seg.file_size];
+                fileBuf.position((int) seg.offset);
+                fileBuf.get(initData);
+                TLSManager.getInstance().allocateSlot(emulator, soName, tlsAlign, initData);
+                if (log.isDebugEnabled()) {
+                    log.debug("[TLS] {} slot allocated, filesz=0x{}, memsz=0x{}", soName,
+                            Long.toHexString(seg.file_size), Long.toHexString(seg.mem_size));
+                }
+                break;
+            }
+        }
+
         for (MemoizedObject<ElfRelocation> object : dynamicStructure.getRelocations()) {
             ElfRelocation relocation = object.getValue();
             final int type = relocation.type();
@@ -510,6 +528,36 @@ public class AndroidElfLoader extends AbstractLoader<AndroidFileIO> implements M
             Logger log = LoggerFactory.getLogger("com.github.unidbg.linux." + soName);
             if (log.isDebugEnabled()) {
                 log.debug("symbol={}, type={}, relocationAddr={}, offset=0x{}, addend={}, sym={}, android={}", symbol, type, relocationAddr, Long.toHexString(relocation.offset()), relocation.addend(), relocation.sym(), relocation.isAndroid());
+            }
+        // R_AARCH64_TLSDESC(1031) —— 上游常量 R_AARCH64_TLS_DTPREL32 命名有误(实际 1031=TLSDESC):
+        // desc = {resolver, varAddr}, SO 代码 blr resolver 返回变量地址(相对 TP 恒等计算)
+        if (type == 1031) {
+                long varAddr = 0;
+                if (symbol != null) {
+                    long self = TLSManager.getInstance().getSlot(soName);
+                    varAddr = self + sym_value;
+                    if (varAddr == self && sym_value == 0) {
+                        // 符号在依赖 so: 遍历 needed 找已分配槽
+                        for (Module needed : neededLibraries.values()) {
+                            long slot = TLSManager.getInstance().getSlot(needed.name);
+                            if (slot != 0) {
+                                varAddr = slot + sym_value;
+                                break;
+                            }
+                        }
+                    }
+                }
+                com.sun.jna.Pointer desc = relocationAddr;
+                com.sun.jna.Pointer func = TLSManager.getInstance().getResolver(emulator);
+                desc.setPointer(0, func);
+                desc.setPointer(8, UnidbgPointer.pointer(emulator, varAddr));
+                System.out.println("[TLSDESC] " + soName + " sym_value=" + sym_value
+                        + " varAddr=0x" + Long.toHexString(varAddr));
+                if (log.isDebugEnabled()) {
+                    log.debug("[TLSDESC] desc@0x{} varAddr=0x{}", Long.toHexString(relocation.offset()),
+                            Long.toHexString(varAddr));
+                }
+                continue;
             }
 
             ModuleSymbol moduleSymbol;

@@ -390,4 +390,43 @@ public interface Backend {
         return Capability.all();
     }
 
+    // --- NativeTracer(阶段3 ④): C 层指令 trace ring buffer ---
+    //
+    // 生命周期: startNativeTrace → 模拟执行(纯 C 回调写 ring, 无 JNI 穿越)
+    // → stopNativeTrace(摘 hook) → drainNativeTrace(解码落盘) → freeNativeTrace。
+    // 默认实现 = 不支持(抛 UnsupportedOperationException); Unicorn2 透传
+    // uc_trace_*。旧版 natives(无 uc_trace 符号)下首个调用抛
+    // UnsatisfiedLinkError —— 调用方(FastTracer.Mode.NATIVE)捕获后降级 BINARY。
+
+    /**
+     * 开启 C 层指令 trace: 分配 ring buffer 并挂内建 code hook。
+     *
+     * @param begin         trace 起始地址(inclusive); begin &gt; end 表示全范围
+     * @param end           trace 结束地址(inclusive)
+     * @param capacityBytes ring 容量(顺序流 ~5B/条); 溢出停写不覆盖
+     */
+    default void startNativeTrace(long begin, long end, long capacityBytes) {
+        throw new UnsupportedOperationException("NATIVE_TRACE not supported by this backend");
+    }
+
+    /** 摘内建 hook, ring 保留待 drain。 */
+    default void stopNativeTrace() {
+    }
+
+    /** 返回 ring 数据快照; 未开启时返回 null。 */
+    default com.github.unidbg.trace.NativeTraceData drainNativeTrace() {
+        return null;
+    }
+
+    /**
+     * 线程切换等标记(12B marker entry)。协作式调度器在任务切换点调用,
+     * drain 时转成 UBTR SWITCH 记录。native trace 未开启时为空操作。
+     */
+    default void traceMarker(long payload) {
+    }
+
+    /** 释放 ring(drain 完成后必须调用)。 */
+    default void freeNativeTrace() {
+    }
+
 }

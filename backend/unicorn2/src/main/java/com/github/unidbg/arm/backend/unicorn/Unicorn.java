@@ -393,6 +393,58 @@ public class Unicorn {
 
     private static native void removeCache(long handle, long begin, long end);
 
+    // NativeTracer (unibase): C 层指令 trace ring buffer —— 无每指令 JNI 穿越。
+    // 典型流程: traceStart → 模拟执行 → traceStop → traceBuffer/traceCount drain
+    // → (上层解码转 UBTR) → traceFree。旧版 natives 无 uc_trace 符号时
+    // 首次调用抛 UnsatisfiedLinkError, 由上层探测降级。
+    public void traceStart(long begin, long end, long capacityBytes) throws UnicornException {
+        trace_start(nativeHandle, begin, end, capacityBytes);
+    }
+
+    private static native void trace_start(long handle, long begin, long end, long capacityBytes) throws UnicornException;
+
+    /** 摘内建 hook, ring 保留待 drain。 */
+    public void traceStop() throws UnicornException {
+        trace_stop(nativeHandle);
+    }
+
+    private static native void trace_stop(long handle) throws UnicornException;
+
+    /** ring 只读 direct 视图(写指针即已写字节数); 未 trace 时返回 null。 */
+    public java.nio.ByteBuffer traceBuffer() {
+        return trace_buffer(nativeHandle);
+    }
+
+    private static native java.nio.ByteBuffer trace_buffer(long handle);
+
+    /** ring 已写 entry 字节数。 */
+    public long traceCount() {
+        return trace_count(nativeHandle);
+    }
+
+    private static native long trace_count(long handle);
+
+    /** ring 写满标志(溢出停写不覆盖)。 */
+    public boolean traceOverflow() {
+        return trace_overflow(nativeHandle);
+    }
+
+    private static native boolean trace_overflow(long handle);
+
+    /** 线程切换等标记(12B marker entry)。 */
+    public void traceMarker(long payload) throws UnicornException {
+        trace_marker(nativeHandle, payload);
+    }
+
+    private static native void trace_marker(long handle, long payload) throws UnicornException;
+
+    /** 释放 ring(drain 完成后必须调用)。 */
+    public void traceFree() throws UnicornException {
+        trace_free(nativeHandle);
+    }
+
+    private static native void trace_free(long handle) throws UnicornException;
+
     public UnHook hook_add_new(BlockHook callback, long begin, long end, Object user_data) throws UnicornException {
         NewHook hook = new NewHook(callback, user_data);
         long handle = registerHook(nativeHandle, UnicornConst.UC_HOOK_BLOCK, begin, end, hook);

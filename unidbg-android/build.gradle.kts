@@ -23,6 +23,8 @@ val smokeTest by tasks.registering(Test::class) {
     systemProperty("unibase.backend", (project.findProperty("backend") as String?) ?: "unicorn2")
     // 基线依赖宿主侧种子文件, 由本机准备(见 HongguoSignBaselineTest 注释)
     systemProperty("unibase.hongguo.seeds", System.getenv("MSDATA_DIR") ?: "/tmp/msdata_files")
+    // TRACE_BENCH(SixGod)透传: -Dtrace.mode=none|tracecode|fast|ubtr|native
+    System.getProperty("trace.mode")?.let { systemProperty("trace.mode", it) }
 }
 
 // 调试用: 打印测试运行时完整 classpath (./gradlew :unidbg-android:printTestClasspath -q)
@@ -44,6 +46,7 @@ tasks.withType<Test>().configureEach {
         "com/github/unidbg/android/PageSizeTest*",
         "com/github/unidbg/android/ModernElfTest*",
         "com/github/unidbg/android/FastTracerBinaryTest*",
+        "com/github/unidbg/android/FastTracerNativeTest*",
         "com/github/unidbg/android/BusyBoxTest*",
         "com/github/unidbg/android/RunExecutable*",
         "com/github/unidbg/android/struct/*",

@@ -170,6 +170,7 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                                     SignalOps ops = task.isMainThread() ? this : task;
                                     try {
                                         this.runningTask = signalTask;
+                                        traceMarker(signalTask);
                                         Number ret = signalTask.callHandler(ops, emulator);
                                         log.debug("End run signalTask={}, ret={}", signalTask, ret);
                                         if (ret != null) {
@@ -190,6 +191,7 @@ public class UniThreadDispatcher implements ThreadDispatcher {
 
                         try {
                             this.runningTask = task;
+                            traceMarker(task);
                             dispatchedThisRound++;
                             Number ret = task.dispatch(emulator);
                             log.debug("End dispatch task={}, ret={}", task, ret);
@@ -261,6 +263,15 @@ public class UniThreadDispatcher implements ThreadDispatcher {
     @Override
     public int getTaskCount() {
         return taskList.size() + threadTaskList.size();
+    }
+
+    /**
+     * 任务切换点写 NativeTracer marker(阶段3 ④)。
+     * NATIVE trace 未开启时 Backend.traceMarker 为 no-op(BINARY 模式的线程
+     * 标记走 FastTracer 回调内懒检测, 互不干扰)。
+     */
+    private void traceMarker(RunnableTask task) {
+        emulator.getBackend().traceMarker(task instanceof Task ? ((Task) task).getId() : 0);
     }
 
     private SigSet mainThreadSigMaskSet;

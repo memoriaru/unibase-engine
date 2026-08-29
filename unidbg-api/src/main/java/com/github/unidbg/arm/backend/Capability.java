@@ -33,6 +33,12 @@ public enum Capability {
     CONTEXT_SNAPSHOT,
     /** 硬件断点 */
     HW_BREAKPOINT,
+    /**
+     * C 层指令 trace(uc_trace ring buffer, 阶段3 NativeTracer)。
+     * 运行时可用性还取决于 natives 是否含 uc_trace 符号 —— 旧版 natives 下
+     * startNativeTrace 抛 UnsatisfiedLinkError, 调用方应探测降级(见 FastTracer)。
+     */
+    NATIVE_TRACE,
     ;
 
     public static java.util.Set<Capability> all() {

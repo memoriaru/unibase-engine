@@ -779,6 +779,72 @@ JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_mem_1
   return Java_com_github_unidbg_arm_backend_unicorn_Unicorn_mem_1allocated_1size(env, cls, handle);
 }
 
+// ---------------------------------------------------------------------------
+// NativeTracer (unibase): C 层 trace ring buffer 的 JNI 桥。
+// 实现在 unicorn fork 的 uc_trace.c(见 unibase docs/native-trace-design.md)。
+// 旧版 natives(无 uc_trace 符号)下这些方法仅在首次调用时抛
+// UnsatisfiedLinkError, 由上层探测降级, 不影响库加载。
+// ---------------------------------------------------------------------------
+
+JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_trace_1start
+  (JNIEnv *env, jclass cls, jlong handle, jlong begin, jlong end, jlong capacityBytes) {
+  t_unicorn unicorn = (t_unicorn) handle;
+  uc_err err = uc_trace_start(unicorn->uc, (uint64_t)begin, (uint64_t)end, (size_t)capacityBytes);
+  if (err != UC_ERR_OK) {
+    throwException(env, err);
+  }
+}
+
+JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_trace_1stop
+  (JNIEnv *env, jclass cls, jlong handle) {
+  t_unicorn unicorn = (t_unicorn) handle;
+  uc_err err = uc_trace_stop(unicorn->uc);
+  if (err != UC_ERR_OK) {
+    throwException(env, err);
+  }
+}
+
+JNIEXPORT jobject JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_trace_1buffer
+  (JNIEnv *env, jclass cls, jlong handle) {
+  t_unicorn unicorn = (t_unicorn) handle;
+  size_t size = 0;
+  const uint8_t *buf = uc_trace_buffer(unicorn->uc, &size);
+  if (buf == NULL || size == 0) {
+    return NULL;
+  }
+  return (*env)->NewDirectByteBuffer(env, (void *)buf, (jlong)size);
+}
+
+JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_trace_1count
+  (JNIEnv *env, jclass cls, jlong handle) {
+  t_unicorn unicorn = (t_unicorn) handle;
+  return (jlong)uc_trace_count(unicorn->uc);
+}
+
+JNIEXPORT jboolean JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_trace_1overflow
+  (JNIEnv *env, jclass cls, jlong handle) {
+  t_unicorn unicorn = (t_unicorn) handle;
+  return uc_trace_overflow(unicorn->uc) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_trace_1marker
+  (JNIEnv *env, jclass cls, jlong handle, jlong payload) {
+  t_unicorn unicorn = (t_unicorn) handle;
+  uc_err err = uc_trace_marker(unicorn->uc, (uint64_t)payload);
+  if (err != UC_ERR_OK) {
+    throwException(env, err);
+  }
+}
+
+JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_trace_1free
+  (JNIEnv *env, jclass cls, jlong handle) {
+  t_unicorn unicorn = (t_unicorn) handle;
+  uc_err err = uc_trace_free(unicorn->uc);
+  if (err != UC_ERR_OK) {
+    throwException(env, err);
+  }
+}
+
 static JNINativeMethod s_methods[] = {
   {"registerHook", "(JIJJLcom/github/unidbg/arm/backend/unicorn/Unicorn$NewHook;)J", (void *) Java_com_github_unidbg_arm_backend_unicorn_Unicorn_registerHook__JIJJLcom_github_unidbg_arm_backend_unicorn_Unicorn_NewHook_2 },
   {"registerHook", "(JILcom/github/unidbg/arm/backend/unicorn/Unicorn$NewHook;)J",   (void *) Java_com_github_unidbg_arm_backend_unicorn_Unicorn_registerHook__JILcom_github_unidbg_arm_backend_unicorn_Unicorn_NewHook_2 }

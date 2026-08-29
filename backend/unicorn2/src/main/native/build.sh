@@ -39,7 +39,10 @@ build_unicorn_lib() {
     pushd "$build_dir" > /dev/null
     if $need_configure; then
         echo "  Configuring in $build_dir ..."
+        # CMAKE_POLICY_VERSION_MINIMUM: unicorn2 的 cmake_minimum_required(2.8)
+        # 在 CMake >= 4 直接配置失败, 需显式放宽(仅影响 policy 警告, 不影响产物)
         cmake .. -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
               -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
               -DUNICORN_ARCH="arm;aarch64" \
               $extra_cmake_args

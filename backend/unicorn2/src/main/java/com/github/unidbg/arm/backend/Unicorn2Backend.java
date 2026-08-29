@@ -325,4 +325,50 @@ class Unicorn2Backend extends AbstractBackend implements Backend {
             unHook = unicorn.registerEmuCountHook(emu_count);
         }
     }
+
+    // --- NativeTracer(阶段3 ④): uc_trace_* 透传 ---
+    // 旧版 natives(无 uc_trace 符号)下首个调用抛 UnsatisfiedLinkError,
+    // 由 FastTracer 探测捕获降级 BINARY, 本类不做防御(保持透传简单)。
+
+    private boolean nativeTraceActive;
+
+    @Override
+    public void startNativeTrace(long begin, long end, long capacityBytes) {
+        unicorn.traceStart(begin, end, capacityBytes);
+        nativeTraceActive = true;
+    }
+
+    @Override
+    public void stopNativeTrace() {
+        if (nativeTraceActive) {
+            unicorn.traceStop();
+        }
+    }
+
+    @Override
+    public com.github.unidbg.trace.NativeTraceData drainNativeTrace() {
+        if (!nativeTraceActive) {
+            return null;
+        }
+        java.nio.ByteBuffer buffer = unicorn.traceBuffer();
+        if (buffer != null) {
+            buffer = buffer.asReadOnlyBuffer().order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        }
+        return new com.github.unidbg.trace.NativeTraceData(buffer, unicorn.traceCount(), unicorn.traceOverflow());
+    }
+
+    @Override
+    public void traceMarker(long payload) {
+        if (nativeTraceActive) {
+            unicorn.traceMarker(payload);
+        }
+    }
+
+    @Override
+    public void freeNativeTrace() {
+        if (nativeTraceActive) {
+            unicorn.traceFree();
+            nativeTraceActive = false;
+        }
+    }
 }

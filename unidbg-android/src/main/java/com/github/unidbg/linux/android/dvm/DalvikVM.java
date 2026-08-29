@@ -141,15 +141,18 @@ public class DalvikVM extends BaseVM implements VM {
                     System.out.printf("JNIEnv->GetSuperClass(%s) was called from %s%n", dvmClass, context.getLRPointer());
                 }
                 if (dvmClass.getClassName().equals("java/lang/Object")) {
-                    log.debug("JNIEnv->GetSuperClass was called, class = {} According to Java Native Interface Specification, If clazz specifies the class Object, returns NULL.", dvmClass.getClassName());
-                    throw new BackendException();
+                    if (log.isDebugEnabled()) {
+                        log.debug("JNIEnv->GetSuperClass(class=Object) returns NULL per JNI spec.");
+                    }
+                    return 0;
                 }
                 DvmClass superClass = dvmClass.getSuperclass();
                 if (superClass == null) {
+                    // 未声明父类: 按 ART 语义回落 java/lang/Object, 不再抛异常中断模拟
                     if (log.isDebugEnabled()) {
-                        log.debug("JNIEnv->GetSuperClass was called, class = {}, superClass get failed.", dvmClass.getClassName());
+                        log.debug("JNIEnv->GetSuperClass was called, class = {}, superClass undeclared, fallback to java/lang/Object.", dvmClass.getClassName());
                     }
-                    throw new BackendException();
+                    return resolveClass("java/lang/Object").hashCode();
                 } else {
                     if (log.isDebugEnabled()) {
                         log.debug("JNIEnv->GetSuperClass was called, class = {}, superClass = {}", dvmClass.getClassName(), superClass.getClassName());

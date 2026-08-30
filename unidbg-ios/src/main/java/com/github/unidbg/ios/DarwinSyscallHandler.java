@@ -858,8 +858,19 @@ public abstract class DarwinSyscallHandler extends UnixSyscallHandler<DarwinFile
         return "Darwin";
     }
 
+    /** 版本指纹(BundleLoader 参数化注入; null 时保持历史默认 7.1.0 世代)。 */
+    private OSVersion osVersion;
+
+    public OSVersion getOSVersion() {
+        return osVersion;
+    }
+
+    public void setOSVersion(OSVersion osVersion) {
+        this.osVersion = osVersion;
+    }
+
     protected String getKernelOsRelease() {
-        return "14.0.0";
+        return osVersion != null ? osVersion.kernelRelease : "14.0.0";
     }
 
     protected String getKernelVersion() {
@@ -867,7 +878,7 @@ public abstract class DarwinSyscallHandler extends UnixSyscallHandler<DarwinFile
     }
 
     protected String getBuildVersion() {
-        return "9A127";
+        return osVersion != null ? osVersion.buildVersion : "9A127";
     }
 
     protected String getKernelHostName() {

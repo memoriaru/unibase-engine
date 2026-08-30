@@ -26,3 +26,13 @@ val iosSpike by tasks.registering(Test::class) {
     include("unibase/ios/**")
     filter { setFailOnNoMatchingTests(false) }
 }
+
+// 阶段4 桩库 B/C 期: 桩库单测(零样本依赖, CI 可跑; 常规 test 因套件排除而不含)
+val iosStubTest by tasks.registering(Test::class) {
+    group = "verification"
+    description = "iOS 宿主桩库测试(HostStubStore/Collector, 零样本)"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("com/github/unidbg/ios/service/**")
+    filter { setFailOnNoMatchingTests(false) }
+}

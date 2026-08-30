@@ -7,6 +7,7 @@ import com.github.unidbg.arm.Arm64Svc;
 import com.github.unidbg.arm.backend.Unicorn2Factory;
 import com.github.unidbg.file.ios.DarwinFileIO;
 import com.github.unidbg.hook.HookListener;
+import com.github.unidbg.ios.MachOLoader;
 import com.github.unidbg.ios.MachOModule;
 import com.github.unidbg.ios.ipa.BundleLoader;
 import com.github.unidbg.ios.ipa.EmulatorConfigurator;
@@ -36,9 +37,9 @@ import static org.junit.Assume.assumeTrue;
  * (addSignalEntriesToMutableDictionary:) → 信号字典 17 条 → ggi_ged(0x9c9c98)
  * 确定性直调(固定 rand 序列) 与 WallCrawler Python 对照实现差分。
  *
- * 基座修复依赖(主代码已固化): UIKitNotificationStub(通知名 CFString 桩)
- * + CoreGraphicsStub(CGRect 函数/常量桩); 驱动侧: isiOSAppOnMac/keyWindow
- * 版本代差补方法 + rand 序列 hook(差分确定性)。
+ * 基座修复依赖(主代码已固化): HostStubStore 数据驱动桩库(通知名 CFString 桩
+ * + CGRect 函数/常量桩 + ___isPlatformVersionAtLeast 版本门控); 驱动侧:
+ * isiOSAppOnMac/keyWindow 版本代差补方法 + rand 序列 hook(差分确定性)。
  * 专有样本不入库: 文件缺失时 skip, CI 空跑。
  */
 public class GADSignalsCallTest {
@@ -159,6 +160,15 @@ public class GADSignalsCallTest {
             System.out.println("[GAD-CALL] ggi_ged out head: "
                     + outP.getByteArray(0, 16).length + " bytes (base64 buffer)");
             inBlock.free();
+
+            // ---- ④ 版本指纹注入链(桩库 B 期): manifest 参数化单值生效 ----
+            // guest 侧版本门控语义由 HostStubStoreTest.versionGateSvcCallable 验证
+            // (eFunc 直调 svc 在样本环境受 X16 残留退出约定干扰, 不在此重复)
+            MachOLoader machOLoader = (MachOLoader) emulator.getMemory();
+            machOLoader.setOSVersion(com.github.unidbg.ios.OSVersion.ofIOS(16, 5, 0, "20F5046e"));
+            assertEquals("16.5.0", machOLoader.getOSVersion().major + "."
+                    + machOLoader.getOSVersion().minor + "." + machOLoader.getOSVersion().patch);
+            assertEquals("23.5.0", machOLoader.getOSVersion().kernelRelease);
         } finally {
             emulator.close();
         }

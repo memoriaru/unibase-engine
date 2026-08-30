@@ -9,8 +9,10 @@ import com.github.unidbg.file.ios.DarwinFileIO;
 import com.github.unidbg.ios.BaseLoader;
 import com.github.unidbg.ios.DarwinARM64Emulator;
 import com.github.unidbg.ios.DarwinResolver;
+import com.github.unidbg.ios.DarwinSyscallHandler;
 import com.github.unidbg.ios.MachOLoader;
 import com.github.unidbg.ios.MachOModule;
+import com.github.unidbg.ios.OSVersion;
 import com.github.unidbg.spi.SyscallHandler;
 import org.apache.commons.io.FileUtils;
 import org.slf4j.Logger;
@@ -107,10 +109,50 @@ public class BundleLoader extends BaseLoader {
         syscallHandler.addIOResolver(new BundleResolver(appDir.getPath(), getBundleIdentifier()));
         FileUtils.forceMkdir(new File(rootDir, appDir.getParentFile().getPath()));
         emulator.getMemory().addHookListener(new SymbolResolver(emulator));
-        emulator.getMemory().addHookListener(new com.github.unidbg.ios.service.UIKitNotificationStub(emulator));
-        emulator.getMemory().addHookListener(new com.github.unidbg.ios.service.CoreGraphicsStub(emulator));
+        // 数据驱动桩库: 实证种子 + 外部声明表叠加(theos/sdks 生成, 互操作数据放私有仓)
+        com.github.unidbg.ios.service.HostStubStore stubStore = new com.github.unidbg.ios.service.HostStubStore(emulator);
+        if (stubTables != null) {
+            for (java.io.File table : stubTables) {
+                stubStore.load(new java.io.FileReader(table));
+            }
+        }
+        emulator.getMemory().addHookListener(stubStore);
+        if (osVersion != null) { // 版本指纹参数化(桩库 B 期): 三处消费单值注入
+            ((MachOLoader) emulator.getMemory()).setOSVersion(osVersion);
+            ((DarwinSyscallHandler) syscallHandler).setOSVersion(osVersion);
+        }
+        if (stubCollector != null) { // C 期惰性收集: 链尾观察 + objc runtime 打印拦截
+            emulator.getMemory().addHookListener(stubCollector);
+        }
 
 //        ((DarwinSyscallHandler) syscallHandler).setExecutableBundlePath(executableBundlePath);
+    }
+
+    /** iOS 虚拟环境版本指纹(manifest 参数; null = 默认 7.1.0 世代, "能低则低")。 */
+    private OSVersion osVersion;
+
+    public BundleLoader setOSVersion(OSVersion osVersion) {
+        this.osVersion = osVersion;
+        return this;
+    }
+
+    /** 外部桩声明表(TSV, 数据由 theos/sdks 头文件生成, 互操作数据放私有仓)。 */
+    private List<java.io.File> stubTables;
+
+    public BundleLoader addStubTable(java.io.File table) {
+        if (stubTables == null) {
+            stubTables = new ArrayList<>();
+        }
+        stubTables.add(table);
+        return this;
+    }
+
+    /** C 期惰性收集器(链尾观察, 不改变行为; 运行后 writeReport 出桩声明草案)。 */
+    private com.github.unidbg.ios.service.HostStubCollector stubCollector;
+
+    public BundleLoader setStubCollector(com.github.unidbg.ios.service.HostStubCollector collector) {
+        this.stubCollector = collector;
+        return this;
     }
 
     protected String getBundleIdentifier() {

@@ -34,8 +34,11 @@ public class Dyld64 extends Dyld {
 
     private static final Logger log = LoggerFactory.getLogger(Dyld64.class);
 
+    private final MachOLoader loader;
+
     Dyld64(final MachOLoader loader, final SvcMemory svcMemory) {
         super(svcMemory);
+        this.loader = loader;
 
         __dyld_register_thread_helpers = svcMemory.registerSvc(new Arm64Svc("dyld_register_thread_helpers") {
             @Override
@@ -1001,11 +1004,11 @@ public class Dyld64 extends Dyld {
                         public long handle(Emulator<?> emulator) {
                             RegisterContext context = emulator.getContext();
                             Pointer pointer = context.getPointerArg(0);
-                            // 7.1.0
+                            OSVersion version = loader.getOSVersion(); // 版本指纹参数化(桩库 B 期)
                             SystemVersion systemVersion = new SystemVersion(pointer);
-                            systemVersion.major = 7;
-                            systemVersion.minor = 1;
-                            systemVersion.patch = 0;
+                            systemVersion.major = version.major;
+                            systemVersion.minor = version.minor;
+                            systemVersion.patch = version.patch;
                             systemVersion.pack();
                             return 0;
                         }

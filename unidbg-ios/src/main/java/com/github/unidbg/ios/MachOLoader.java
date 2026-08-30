@@ -114,6 +114,17 @@ public class MachOLoader extends AbstractLoader<DarwinFileIO> implements Memory,
         this.objcRuntime = objcRuntime;
     }
 
+    /** iOS 虚拟环境版本指纹(单值来源; BundleLoader 参数化注入, 默认历史值 7.1.0)。 */
+    private OSVersion osVersion = OSVersion.DEFAULT;
+
+    public OSVersion getOSVersion() {
+        return osVersion;
+    }
+
+    public void setOSVersion(OSVersion osVersion) {
+        this.osVersion = osVersion;
+    }
+
     private UnidbgPointer vars;
     private Pointer errno;
 

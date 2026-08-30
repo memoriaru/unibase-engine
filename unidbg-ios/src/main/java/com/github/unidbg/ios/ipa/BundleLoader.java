@@ -107,6 +107,8 @@ public class BundleLoader extends BaseLoader {
         syscallHandler.addIOResolver(new BundleResolver(appDir.getPath(), getBundleIdentifier()));
         FileUtils.forceMkdir(new File(rootDir, appDir.getParentFile().getPath()));
         emulator.getMemory().addHookListener(new SymbolResolver(emulator));
+        emulator.getMemory().addHookListener(new com.github.unidbg.ios.service.UIKitNotificationStub(emulator));
+        emulator.getMemory().addHookListener(new com.github.unidbg.ios.service.CoreGraphicsStub(emulator));
 
 //        ((DarwinSyscallHandler) syscallHandler).setExecutableBundlePath(executableBundlePath);
     }

@@ -85,8 +85,6 @@ public class UnityFrameworkLoadTest {
             com.github.unidbg.ios.objc.ObjC objc = com.github.unidbg.ios.objc.ObjC.getInstance(emulator);
             com.github.unidbg.ios.struct.objc.ObjcClass gadSignals = objc.getClass("GADSignals");
             assertNotNull("GADSignals 类应已注册进 objc4 运行时(BundleLoader 默认 setObjcRuntime(true))", gadSignals);
-            System.out.println("[SPIKE] objc class GADSignals = 0x"
-                    + Long.toHexString(com.sun.jna.Pointer.nativeValue(gadSignals.getPointer())));
 
             com.github.unidbg.ios.classdump.IClassDumper dumper =
                     com.github.unidbg.ios.classdump.ClassDumper.getInstance(emulator);
@@ -96,18 +94,32 @@ public class UnityFrameworkLoadTest {
             assertTrue("dumpClass 应产出完整类描述(ivars/方法)",
                     dump != null && dump.contains("@interface GADSignals")
                             && dump.contains("dictionaryWithSignals:"));
-            // 已知假象: ObjC.getClass 的映射表对该类返回 0 指针(dumpClass 走运行时查证
-            // 才是真实路径) —— 方法调用下一步应改用 objc_getClass 解析类指针后
-            // objc_msgSend +sharedInstance / respondsToSelector:
 
-            // respondsToSelector: 经 objc_msgSend 问元类 —— 运行时调用链最小真调用
-            try {
-                com.github.unidbg.ios.struct.objc.ObjcObject responds = gadSignals.getMeta()
-                        .callObjc("respondsToSelector:", objc.registerName("dictionaryWithSignals:"));
-                System.out.println("[SPIKE] +respondsToSelector:dictionaryWithSignals: → " + responds);
-            } catch (Exception e) {
-                System.out.println("[SPIKE] msgSend probe failed (记录, 不作为本里程碑断言): " + e);
-            }
+            // dump 显示 +sharedInstance 为类方法, dictionaryWithSignals: 为实例方法
+            // 注意: class_respondsToSelector 查实例方法表 —— 类方法必须问元类
+            assertTrue("类方法 +sharedInstance 应存在",
+                    objc.respondsToSelector(gadSignals.getMeta(), "sharedInstance"));
+            assertTrue("实例方法 dictionaryWithSignals: 应存在",
+                    objc.respondsToSelector(gadSignals, "dictionaryWithSignals:"));
+
+            // 真调用链(已验证): class_respondsToSelector 经 objc_msgSend/selector 注册
+            // 问运行时 —— 类方法问元类, 实例方法问类
+            assertTrue("类方法 +sharedInstance 应存在",
+                    objc.respondsToSelector(gadSignals.getMeta(), "sharedInstance"));
+            assertTrue("实例方法 dictionaryWithSignals: 应存在",
+                    objc.respondsToSelector(gadSignals, "dictionaryWithSignals:"));
+
+            // 实例化调用的边界(阶段4 正式范围, 记录不阻塞):
+            // - +sharedInstance 返回 nil: 其实现走 dispatch_once(GCD), Foundation 的
+            //   os_once 路径在 unidbg 触发 trap(0xfffe23c4) 后返回 nil
+            // - +alloc 抛 mem_read 0xffffffffffffffff: msgSend 深层(isa/元类链)对
+            //   UnityFramework 的 objc 段尚未完全对齐
+            // 下一步 = 补齐 msgSend/isa 链与 os_once, 再走 dictionaryWithSignals: 取信号值
+            com.github.unidbg.ios.struct.objc.ObjcObject singleton =
+                    gadSignals.getMeta().callObjc("sharedInstance");
+            System.out.println("[SPIKE] GADSignals +sharedInstance = "
+                    + (singleton == null ? "nil(dispatch_once 边界, 见上注)"
+                    : com.sun.jna.Pointer.nativeValue(singleton.getPointer())));
         } finally {
             emulator.close();
         }

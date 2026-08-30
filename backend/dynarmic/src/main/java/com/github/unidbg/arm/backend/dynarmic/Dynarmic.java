@@ -22,6 +22,7 @@ public class Dynarmic implements Closeable {
     private static native byte[] mem_read(long handle, long address, int size);
 
     private static native long reg_read_pc64(long handle);
+    private static native int reg_set_pc64(long handle, long value);
     private static native int reg_set_sp64(long handle, long value);
     private static native long reg_read_sp64(long handle);
     private static native long reg_read_nzcv(long handle);
@@ -133,6 +134,13 @@ public class Dynarmic implements Closeable {
             log.debug("reg_set_sp64 value=0x{}", Long.toHexString(value));
         }
         int ret = reg_set_sp64(nativeHandle, value);
+        if (ret != 0) {
+            throw new DynarmicException("ret=" + ret);
+        }
+    }
+
+    public void reg_set_pc64(long value) {
+        int ret = reg_set_pc64(nativeHandle, value);
         if (ret != 0) {
             throw new DynarmicException("ret=" + ret);
         }

@@ -122,6 +122,9 @@ public class DynarmicBackend64 extends DynarmicBackend {
                 case Arm64Const.UC_ARM64_REG_SP:
                     dynarmic.reg_set_sp64(value.longValue());
                     break;
+                case Arm64Const.UC_ARM64_REG_PC:
+                    dynarmic.reg_set_pc64(value.longValue());
+                    break;
                 case Arm64Const.UC_ARM64_REG_X29:
                     dynarmic.reg_write64(29, value.longValue());
                     break;

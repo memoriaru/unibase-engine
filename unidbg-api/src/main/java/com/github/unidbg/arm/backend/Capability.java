@@ -39,6 +39,12 @@ public enum Capability {
      * startNativeTrace 抛 UnsatisfiedLinkError, 调用方应探测降级(见 FastTracer)。
      */
     NATIVE_TRACE,
+    /**
+     * 指令计数时间片(registerEmuCountHook —— 协作式线程调度器的抢占机制)。
+     * 不支持的后端(如 dynarmic 无指令级 hook)线程调度退化为纯协作式
+     * (仅 clone/futex/nanosleep 等让出点切换)。
+     */
+    EMU_COUNT,
     ;
 
     public static java.util.Set<Capability> all() {

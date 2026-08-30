@@ -115,7 +115,10 @@ build_linux() {
 
     echo "=== Building for $output_dir ($platform) ==="
 
+    # 源码仓/分支可覆盖(unibase: memoriaru/unicorn unibase/trace2 携带 uc_trace)
     local docker_args="--build-arg UNICORN_COMMIT=$(get_unicorn_commit)"
+    docker_args="$docker_args --build-arg UNICORN_REPO=${UNICORN_REPO_DOCKER:-https://github.com/zhkl0228/unicorn}"
+    docker_args="$docker_args --build-arg UNICORN_BRANCH=${UNICORN_BRANCH_DOCKER:-unicorn2}"
     if $CLEAN; then
         docker_args="$docker_args --no-cache"
     fi

@@ -10,7 +10,10 @@ RUN sed -i 's|^mirrorlist=|#mirrorlist=|g' /etc/yum.repos.d/CentOS-*.repo && \
 ENV JAVA_HOME=/usr/lib/jvm/java-1.8.0-openjdk
 
 ARG UNICORN_COMMIT=unknown
-RUN git clone --depth 1 -b unicorn2 https://github.com/zhkl0228/unicorn /build/unicorn
+ARG UNICORN_REPO=https://github.com/zhkl0228/unicorn
+ARG UNICORN_BRANCH=unicorn2
+# unibase trace2 分支(uc_trace): --build-arg UNICORN_REPO=https://github.com/memoriaru/unicorn --build-arg UNICORN_BRANCH=unibase/trace2
+RUN git clone --depth 1 -b ${UNICORN_BRANCH} ${UNICORN_REPO} /build/unicorn
 
 WORKDIR /build/unicorn
 RUN mkdir build && cd build && \

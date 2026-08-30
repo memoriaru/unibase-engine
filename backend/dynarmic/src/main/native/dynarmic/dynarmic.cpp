@@ -1117,6 +1117,22 @@ JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_reg
  * Method:    reg_set_sp64
  * Signature: (JJ)I
  */
+JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_reg_1set_1pc64
+  (JNIEnv *env, jclass clazz, jlong handle, jlong value) {
+  t_dynarmic dynarmic = (t_dynarmic) handle;
+  if(dynarmic->is64Bit) {
+    Dynarmic::A64::Jit *jit = dynarmic->jit64;
+    if(jit) {
+      jit->SetPC(value);
+    } else {
+      return 1;
+    }
+  } else {
+    return -1;
+  }
+  return 0;
+}
+
 JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_reg_1set_1sp64
   (JNIEnv *env, jclass clazz, jlong handle, jlong value) {
   t_dynarmic dynarmic = (t_dynarmic) handle;

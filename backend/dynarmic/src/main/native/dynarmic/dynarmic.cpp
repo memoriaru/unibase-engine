@@ -96,6 +96,16 @@ static void notify_memory_write_failed(jobject callback, u64 vaddr, int size) {
     cachedJVM->DetachCurrentThread();
 }
 
+// unibase(A2 快照增量恢复): 脏页跟踪 —— C 层位图, 每写一次置位(~1ns)。
+// 位图由 struct dynarmic 持有, callbacks 持有同一指针; 1 bit / 4KB 页,
+// 覆盖 num_page_table_entries(PAGE_TABLE_ADDRESS_SPACE_BITS=36)以内的地址。
+static inline void dynarmic_mark_dirty(uint8_t *bitmap, size_t pages, u64 vaddr) {
+  u64 idx = vaddr >> DYN_PAGE_BITS;
+  if (bitmap != NULL && idx < pages) {
+    bitmap[idx >> 3] |= (uint8_t)(1u << (idx & 7));
+  }
+}
+
 class DynarmicCallbacks32 final : public Dynarmic::A32::UserCallbacks {
 private:
     ~DynarmicCallbacks32() = default;
@@ -204,11 +214,13 @@ public:
         u8 *dest = (u8 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
         if(dest) {
             dest[0] = value;
+            dynarmic_mark_dirty(dirty_bitmap, dirty_pages, vaddr);
         } else {
             notify_memory_write_failed(callback, vaddr, 1);
             dest = (u8 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
             if(dest) {
                 dest[0] = value;
+            dynarmic_mark_dirty(dirty_bitmap, dirty_pages, vaddr);
                 return;
             }
             fprintf(stderr, "WARN dynarmic MemoryWrite8 unmapped: vaddr=0x%x\n", vaddr);
@@ -223,11 +235,13 @@ public:
         u16 *dest = (u16 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
         if(dest) {
             dest[0] = value;
+            dynarmic_mark_dirty(dirty_bitmap, dirty_pages, vaddr);
         } else {
             notify_memory_write_failed(callback, vaddr, 2);
             dest = (u16 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
             if(dest) {
                 dest[0] = value;
+            dynarmic_mark_dirty(dirty_bitmap, dirty_pages, vaddr);
                 return;
             }
             fprintf(stderr, "WARN dynarmic MemoryWrite16 unmapped: vaddr=0x%x\n", vaddr);
@@ -242,11 +256,13 @@ public:
         u32 *dest = (u32 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
         if(dest) {
             dest[0] = value;
+            dynarmic_mark_dirty(dirty_bitmap, dirty_pages, vaddr);
         } else {
             notify_memory_write_failed(callback, vaddr, 4);
             dest = (u32 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
             if(dest) {
                 dest[0] = value;
+            dynarmic_mark_dirty(dirty_bitmap, dirty_pages, vaddr);
                 return;
             }
             fprintf(stderr, "WARN dynarmic MemoryWrite32 unmapped: vaddr=0x%x\n", vaddr);
@@ -261,11 +277,13 @@ public:
         u64 *dest = (u64 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
         if(dest) {
             dest[0] = value;
+            dynarmic_mark_dirty(dirty_bitmap, dirty_pages, vaddr);
         } else {
             notify_memory_write_failed(callback, vaddr, 8);
             dest = (u64 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
             if(dest) {
                 dest[0] = value;
+            dynarmic_mark_dirty(dirty_bitmap, dirty_pages, vaddr);
                 return;
             }
             fprintf(stderr, "WARN dynarmic MemoryWrite64 unmapped: vaddr=0x%x\n", vaddr);
@@ -342,6 +360,8 @@ public:
     jobject callback = NULL;
     Dynarmic::A32::Jit *cpu;
     std::shared_ptr<DynarmicCP15> cp15;
+    uint8_t *dirty_bitmap = NULL;
+    size_t dirty_pages = 0;
 };
 
 class DynarmicCallbacks64 final : public Dynarmic::A64::UserCallbacks {
@@ -451,11 +471,13 @@ public:
         u8 *dest = (u8 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
         if(dest) {
             dest[0] = value;
+            dynarmic_mark_dirty(dirty_bitmap, dirty_pages, vaddr);
         } else {
             notify_memory_write_failed(callback, vaddr, 1);
             dest = (u8 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
             if(dest) {
                 dest[0] = value;
+            dynarmic_mark_dirty(dirty_bitmap, dirty_pages, vaddr);
                 return;
             }
             fprintf(stderr, "WARN dynarmic MemoryWrite8 unmapped: vaddr=0x%llx\n", (unsigned long long)vaddr);
@@ -470,11 +492,13 @@ public:
         u16 *dest = (u16 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
         if(dest) {
             dest[0] = value;
+            dynarmic_mark_dirty(dirty_bitmap, dirty_pages, vaddr);
         } else {
             notify_memory_write_failed(callback, vaddr, 2);
             dest = (u16 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
             if(dest) {
                 dest[0] = value;
+            dynarmic_mark_dirty(dirty_bitmap, dirty_pages, vaddr);
                 return;
             }
             fprintf(stderr, "WARN dynarmic MemoryWrite16 unmapped: vaddr=0x%llx\n", (unsigned long long)vaddr);
@@ -489,11 +513,13 @@ public:
         u32 *dest = (u32 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
         if(dest) {
             dest[0] = value;
+            dynarmic_mark_dirty(dirty_bitmap, dirty_pages, vaddr);
         } else {
             notify_memory_write_failed(callback, vaddr, 4);
             dest = (u32 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
             if(dest) {
                 dest[0] = value;
+            dynarmic_mark_dirty(dirty_bitmap, dirty_pages, vaddr);
                 return;
             }
             fprintf(stderr, "WARN dynarmic MemoryWrite32 unmapped: vaddr=0x%llx\n", (unsigned long long)vaddr);
@@ -508,11 +534,13 @@ public:
         u64 *dest = (u64 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
         if(dest) {
             dest[0] = value;
+            dynarmic_mark_dirty(dirty_bitmap, dirty_pages, vaddr);
         } else {
             notify_memory_write_failed(callback, vaddr, 8);
             dest = (u64 *) get_memory(memory, vaddr, num_page_table_entries, page_table);
             if(dest) {
                 dest[0] = value;
+            dynarmic_mark_dirty(dirty_bitmap, dirty_pages, vaddr);
                 return;
             }
             fprintf(stderr, "WARN dynarmic MemoryWrite64 unmapped: vaddr=0x%llx\n", (unsigned long long)vaddr);
@@ -615,6 +643,8 @@ public:
     void **page_table = NULL;
     jobject callback = NULL;
     Dynarmic::A64::Jit *cpu;
+    uint8_t *dirty_bitmap = NULL;
+    size_t dirty_pages = 0;
 };
 
 typedef struct dynarmic {
@@ -622,6 +652,10 @@ typedef struct dynarmic {
   khash_t(memory) *memory;
   size_t num_page_table_entries;
   void **page_table;
+  uint8_t *dirty_bitmap;   // unibase A2: 脏页位图(1 bit/4KB 页), dirty_start 分配
+  size_t dirty_pages;
+  bool dirty_tracking;
+  bool dirty_suppress;     // collect 后置位: 快照回写不标记
   DynarmicCallbacks64 *cb64;
   Dynarmic::A64::Jit *jit64;
   DynarmicCallbacks32 *cb32;
@@ -828,6 +862,8 @@ JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_nati
     }
   }
   kh_destroy(memory, memory);
+  free(dynarmic->dirty_bitmap);
+  dynarmic->dirty_bitmap = NULL;
   Dynarmic::A64::Jit *jit64 = dynarmic->jit64;
   if(jit64) {
     jit64->ClearCache();
@@ -1014,6 +1050,9 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_mem_
     char *dest = &addr[start];
 //    printf("mem_write address=%p, vaddr=%p, start=%ld, len=%ld, addr=%p, dest=%p\n", (void*)address, (void*)vaddr, start, len, addr, dest);
     memcpy(dest, src, len);
+    if (dynarmic->dirty_tracking && !dynarmic->dirty_suppress) {
+      dynarmic_mark_dirty(dynarmic->dirty_bitmap, dynarmic->dirty_pages, vaddr);
+    }
     src += len;
   }
   env->ReleaseByteArrayElements(bytes, data, JNI_ABORT);
@@ -1368,6 +1407,100 @@ JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_reg_
       return -1;
     }
   }
+}
+
+
+/*
+ * unibase A2: 脏页跟踪 JNI(dynarmic_dirty_*), 见 struct dynarmic 的 dirty_* 字段。
+ * collect 返回脏页基地址并清零位图, 同时置 dirty_suppress —— 快照回写
+ * (mem_write)不重新标记, restore 完成后由 dirty_resume 恢复标记。
+ */
+JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_dirty_1start
+  (JNIEnv *env, jclass clazz, jlong handle) {
+  t_dynarmic dynarmic = (t_dynarmic) handle;
+  if (dynarmic->dirty_bitmap == NULL) {
+    size_t bytes = (dynarmic->num_page_table_entries + 7) >> 3;
+    dynarmic->dirty_bitmap = (uint8_t *) calloc(1, bytes);
+    if (dynarmic->dirty_bitmap == NULL) {
+      return -1;
+    }
+    dynarmic->dirty_pages = dynarmic->num_page_table_entries;
+  } else {
+    memset(dynarmic->dirty_bitmap, 0, (dynarmic->dirty_pages + 7) >> 3);
+  }
+  dynarmic->dirty_tracking = true;
+  dynarmic->dirty_suppress = false;
+  if (dynarmic->cb64) {
+    dynarmic->cb64->dirty_bitmap = dynarmic->dirty_bitmap;
+    dynarmic->cb64->dirty_pages = dynarmic->dirty_pages;
+  }
+  if (dynarmic->cb32) {
+    dynarmic->cb32->dirty_bitmap = dynarmic->dirty_bitmap;
+    dynarmic->cb32->dirty_pages = dynarmic->dirty_pages;
+  }
+  return 0;
+}
+
+JNIEXPORT jlongArray JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_dirty_1collect
+  (JNIEnv *env, jclass clazz, jlong handle) {
+  t_dynarmic dynarmic = (t_dynarmic) handle;
+  if (dynarmic->dirty_bitmap == NULL) {
+    return NULL;
+  }
+  size_t bytes = (dynarmic->dirty_pages + 7) >> 3;
+  uint8_t *bitmap = dynarmic->dirty_bitmap;
+  size_t count = 0;
+  for (size_t i = 0; i < bytes; i++) {
+    uint8_t b = bitmap[i];
+    while (b) { count += (b & 1); b >>= 1; }
+  }
+  jlongArray arr = env->NewLongArray((jsize) count);
+  if (count == 0) {
+    dynarmic->dirty_suppress = true;
+    return arr;
+  }
+  jlong *buf = (jlong *) malloc(count * sizeof(jlong));
+  size_t n = 0;
+  for (size_t i = 0; i < bytes && n < count; i++) {
+    uint8_t b = bitmap[i];
+    bitmap[i] = 0;
+    while (b) {
+      int pos = __builtin_ctz(b);          // 从不清零 b 本身, pos 即原始位号
+      u64 idx = ((u64) i << 3) + (u64) pos;
+      buf[n++] = (jlong)(idx << DYN_PAGE_BITS);
+      b &= (uint8_t)(b - 1);               // 清最低位
+    }
+  }
+  env->SetLongArrayRegion(arr, 0, (jsize) count, buf);
+  free(buf);
+  dynarmic->dirty_suppress = true;
+  return arr;
+}
+
+JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_dirty_1resume
+  (JNIEnv *env, jclass clazz, jlong handle) {
+  t_dynarmic dynarmic = (t_dynarmic) handle;
+  dynarmic->dirty_suppress = false;
+  return 0;
+}
+
+JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_dirty_1stop
+  (JNIEnv *env, jclass clazz, jlong handle) {
+  t_dynarmic dynarmic = (t_dynarmic) handle;
+  free(dynarmic->dirty_bitmap);
+  dynarmic->dirty_bitmap = NULL;
+  dynarmic->dirty_pages = 0;
+  dynarmic->dirty_tracking = false;
+  dynarmic->dirty_suppress = false;
+  if (dynarmic->cb64) {
+    dynarmic->cb64->dirty_bitmap = NULL;
+    dynarmic->cb64->dirty_pages = 0;
+  }
+  if (dynarmic->cb32) {
+    dynarmic->cb32->dirty_bitmap = NULL;
+    dynarmic->cb32->dirty_pages = 0;
+  }
+  return 0;
 }
 
 /*

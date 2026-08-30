@@ -429,4 +429,38 @@ public interface Backend {
     default void freeNativeTrace() {
     }
 
+    // --- 脏页跟踪(阶段1 A2): 快照增量恢复的基础原语 ---
+    //
+    // backend 在写路径标记脏页(理想实现 = C 层位图, 每写 ~1ns; 不支持的后端
+    // 返回 false, 调用方退回全量恢复)。生命周期: startDirtyTracking → 执行
+    // → collectAndResetDirtyPages(取走脏页清单, 标记挂起) → 恢复写入 →
+    // resumeDirtyMarking。默认实现 = 不支持。
+
+    /**
+     * 开启脏页跟踪(分配位图并清零)。返回 false = 后端不支持。
+     * 旧版 natives 缺符号时抛 {@link LinkageError}, 调用方按不支持处理。
+     */
+    default boolean startDirtyTracking() {
+        return false;
+    }
+
+    default boolean isDirtyTrackingActive() {
+        return false;
+    }
+
+    /**
+     * 返回自上次收集以来的脏页基地址(4KB 粒度)并清零位图; 同时挂起写标记,
+     * 使紧随其后的快照回写(经 mem_write)不被误标 —— 恢复完成后必须调
+     * {@link #resumeDirtyMarking()}。
+     */
+    default long[] collectAndResetDirtyPages() {
+        throw new UnsupportedOperationException("dirty tracking not supported by this backend");
+    }
+
+    default void resumeDirtyMarking() {
+    }
+
+    default void stopDirtyTracking() {
+    }
+
 }

@@ -292,6 +292,37 @@ public class Dynarmic implements Closeable {
         }
     }
 
+    // --- 脏页跟踪(unibase A2 快照增量恢复基础): C 层位图, guest 写路径每写 ~1ns ---
+    // 语义见 Backend.startDirtyTracking; 旧 natives 无符号时首调抛 UnsatisfiedLinkError。
+
+    public void startDirtyTracking() {
+        int ret = dirty_start(nativeHandle);
+        if (ret != 0) {
+            throw new DynarmicException("ret=" + ret);
+        }
+    }
+
+    private static native int dirty_start(long handle);
+
+    /** 返回脏页基地址并清零位图; 标记挂起至 resumeDirtyMarking(防快照回写重新标记)。 */
+    public long[] collectAndResetDirtyPages() {
+        return dirty_collect(nativeHandle);
+    }
+
+    private static native long[] dirty_collect(long handle);
+
+    public void resumeDirtyMarking() {
+        dirty_resume(nativeHandle);
+    }
+
+    private static native void dirty_resume(long handle);
+
+    public void stopDirtyTracking() {
+        dirty_stop(nativeHandle);
+    }
+
+    private static native void dirty_stop(long handle);
+
     public byte[] mem_read(long address, int size) {
         long start = log.isDebugEnabled() ? System.currentTimeMillis() : 0;
         byte[] ret = mem_read(nativeHandle, address, size);

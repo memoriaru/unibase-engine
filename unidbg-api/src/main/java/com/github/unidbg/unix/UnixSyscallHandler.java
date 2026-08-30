@@ -181,8 +181,37 @@ public abstract class UnixSyscallHandler<T extends NewFileIO> implements Syscall
 
     protected abstract T createByteArrayFileIO(String pathname, int oflags, byte[] data);
 
+    private volatile long frozenTimeMillis = -1; // <0 = 未冻结
+    private volatile java.util.Random frozenRandom; // 冻结期熵源(种子=冻结时刻)
+
+    /**
+     * 冻结 guest 可见的墙钟与熵源(unibase 阶段1 确定性回放): 冻结后
+     * CLOCK_REALTIME/gettimeofday 等时间源全部返回 freezeAtMillis, 单调钟同步
+     * 冻结, getrandom/urandom 输出以冻结时刻为种子的确定性随机 —— 快照恢复 +
+     * 相同输入 ⇒ 时间敏感路径(签名等)输出确定。传负值解除冻结。
+     */
+    public void freezeTime(long freezeAtMillis) {
+        this.frozenTimeMillis = freezeAtMillis;
+        this.frozenRandom = freezeAtMillis > 0 ? new java.util.Random(freezeAtMillis) : null;
+    }
+
+    public boolean isTimeFrozen() {
+        return frozenTimeMillis > 0;
+    }
+
+    /** guest 熵源统一下口: 冻结期输出确定性随机, 否则真随机。 */
+    public void nextGuestRandomBytes(byte[] bytes) {
+        java.util.Random r = frozenRandom;
+        if (r != null) {
+            r.nextBytes(bytes);
+        } else {
+            java.util.concurrent.ThreadLocalRandom.current().nextBytes(bytes);
+        }
+    }
+
     protected long currentTimeMillis() {
-        return System.currentTimeMillis();
+        long frozen = frozenTimeMillis;
+        return frozen > 0 ? frozen : System.currentTimeMillis();
     }
 
     @SuppressWarnings("unused")
@@ -574,9 +603,8 @@ public abstract class UnixSyscallHandler<T extends NewFileIO> implements Syscall
     }
 
     protected int getrandom(Pointer buf, int bufSize, int flags) {
-        Random random = new Random();
         byte[] bytes = new byte[bufSize];
-        random.nextBytes(bytes);
+        nextGuestRandomBytes(bytes);
         buf.write(0, bytes, 0, bytes.length);
         if (log.isDebugEnabled()) {
             log.debug(Inspector.inspectString(bytes, "getrandom buf=" + buf + ", bufSize=" + bufSize + ", flags=0x" + Integer.toHexString(flags)));

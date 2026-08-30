@@ -57,6 +57,42 @@ public abstract class DynarmicBackend extends FastBackend implements Backend, Dy
         return eventMemHookNotifier != null && eventMemHookNotifier.handleMemoryWriteFailed(this, vaddr, size);
     }
 
+    // --- 脏页跟踪(unibase A2): C 层位图机制已建成但**当前必须保持关闭** ---
+    //
+    // 实测(DynarmicDirtyCoverageTest): dynarmic 开启 config.page_table 后 JIT 对
+    // 已映射内存快速直访, guest 常规 store **不经过** MemoryWrite* 回调 —— 位图
+    // 只能看到 JNI mem_write 与未映射降级路径的写入, 增量恢复漏页导致后续执行
+    // 走飞(hongguo 实测: restore 只回收 28 页, 第二轮 sign 即线性扫描 unmapped)。
+    // 正解 = fork 级 mprotect COW(host 页 RO + fault 路径标记), 落地后本门控
+    // 翻回 true 并以 DynarmicDirtyCoverageTest 为验收。
+    private boolean dirtyTrackingActive;
+
+    @Override
+    public boolean startDirtyTracking() {
+        return false; // fastmem 直访绕过 MemoryWrite* 回调, 位图不完整 —— 见上注
+    }
+
+    @Override
+    public boolean isDirtyTrackingActive() {
+        return dirtyTrackingActive;
+    }
+
+    @Override
+    public long[] collectAndResetDirtyPages() {
+        return dynarmic.collectAndResetDirtyPages();
+    }
+
+    @Override
+    public void resumeDirtyMarking() {
+        dynarmic.resumeDirtyMarking();
+    }
+
+    @Override
+    public void stopDirtyTracking() {
+        dynarmic.stopDirtyTracking();
+        dirtyTrackingActive = false;
+    }
+
     @Override
     public final void switchUserMode() {
         // Only user-mode is emulated, there is no emulation of any other privilege levels.

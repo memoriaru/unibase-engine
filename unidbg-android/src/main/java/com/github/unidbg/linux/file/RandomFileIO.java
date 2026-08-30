@@ -9,8 +9,11 @@ import java.util.concurrent.ThreadLocalRandom;
 
 public class RandomFileIO extends DriverFileIO {
 
+    private final Emulator<?> emulator;
+
     public RandomFileIO(Emulator<?> emulator, String path) {
         super(emulator, IOConstants.O_RDONLY, path);
+        this.emulator = emulator;
     }
 
     @Override
@@ -29,6 +32,11 @@ public class RandomFileIO extends DriverFileIO {
     }
 
     protected void randBytes(byte[] bytes) {
-        ThreadLocalRandom.current().nextBytes(bytes);
+        // 时间冻结时走确定性熵源(unibase A3), 否则真随机
+        if (emulator.getSyscallHandler() instanceof com.github.unidbg.unix.UnixSyscallHandler) {
+            ((com.github.unidbg.unix.UnixSyscallHandler<?>) emulator.getSyscallHandler()).nextGuestRandomBytes(bytes);
+        } else {
+            ThreadLocalRandom.current().nextBytes(bytes);
+        }
     }
 }

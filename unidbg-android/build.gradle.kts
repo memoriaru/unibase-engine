@@ -52,6 +52,7 @@ tasks.withType<Test>().configureEach {
         "com/github/unidbg/android/BusyBoxTest*",
         "com/github/unidbg/android/RunExecutable*",
         "com/github/unidbg/android/struct/*",
+        "com/github/unidbg/android/integration/*",
         "com/github/unidbg/linux/android/dvm/FallbackJniTest*",
         "unibase/**",
     )

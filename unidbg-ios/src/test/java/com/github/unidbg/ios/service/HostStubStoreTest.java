@@ -33,8 +33,9 @@ public class HostStubStoreTest {
                 "_UIWindowDidBecomeKeyNotification\tcfstring\tCustomNameValue\tUIKit iOS2.0+\n" +
                 "_FooNotification\tcfstring\t\t\t\n" +
                 "_MyInsetsZero\tdata\t0,0,0,0\t\n" +
-                "_MyRectFunc\tfunc\trect\t\n"));
-        assertEquals(before + 3, store.size()); // 1 覆盖 + 3 新增
+                "_MyRectFunc\tfunc\trect\t\n" +
+                "_OBJC_CLASS_$_UIButton\tobjc-class\t\t# catjam count=25\n"));
+        assertEquals(before + 4, store.size()); // 1 覆盖 + 4 新增
         assertTrue(store.size() > 0);
     }
 

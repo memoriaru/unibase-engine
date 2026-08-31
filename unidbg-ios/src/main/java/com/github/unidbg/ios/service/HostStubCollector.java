@@ -241,6 +241,15 @@ public class HostStubCollector implements HookListener {
             // 实证误报: 基座 libobjc 的 absolute symbol(值 0 正确), 桩成零页会卡死 dispatch_once
             return new Guess("# 勿桩", "(libobjc absolute symbol, 基座值 0 即正确语义)");
         }
+        if (name.startsWith("OBJC_METACLASS_$_")) {
+            return new Guess("# objc-class", "(元类与 _OBJC_CLASS_$_ 同名条目配套, 表里只写 CLASS 行)");
+        }
+        if (name.startsWith("OBJC_CLASS_$_")) {
+            return new Guess("objc-class", "(降级桩: runtime 分配 NSObject 子类)");
+        }
+        if (name.startsWith("swift_") || name.startsWith("$s")) {
+            return new Guess("# swift", "(Swift runtime 原语, 语义待审: 基座补 libswiftCore vs 原语桩)");
+        }
         if (name.endsWith("Notification") || name.endsWith("Key") || name.startsWith("kCF")
                 || name.startsWith("NS") || name.startsWith("UI") || name.startsWith("AV")
                 || name.startsWith("CT") || name.startsWith("CM")) {

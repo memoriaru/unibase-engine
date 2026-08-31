@@ -55,19 +55,33 @@ public class CatJamCollectTest {
 
         // 闭环第三步: 样本级表(收集草案 → 人工审语义 → 启用) —— C 期完整闭环实证
         File sampleTable = new File(fullTable.getParentFile(), "catjam.tsv");
+        File classTable = new File(fullTable.getParentFile(), "catjam_classes.tsv");
         if (sampleTable.isFile()) {
             int sample = collectWith(fullTable, sampleTable);
             System.out.println("[CATJAM] sample(全量+审核后样本表): unbound = " + sample
                     + " (较 bare 清零 " + (bare - sample) + " = " + (100 * (bare - sample) / bare) + "%)");
             assertTrue("样本级表应进一步清零", sample < full);
+
+            // 第四步: objc-class 降级桩(L1 图形符号层) —— runtime 真分配 NSObject 子类
+            if (classTable.isFile()) {
+                int withClasses = collectTables(fullTable, sampleTable, classTable);
+                System.out.println("[CATJAM] classes(+类降级桩 148): unbound = " + withClasses
+                        + " (较 bare 清零 " + (bare - withClasses) + " = "
+                        + (100 * (bare - withClasses) / bare) + "%)");
+                assertTrue("类降级桩应进一步清零", withClasses < sample);
+            }
         }
     }
 
     private int collect(File stubTable) throws Exception {
-        return collectWith(stubTable, null);
+        return collectTables(stubTable, null, null);
     }
 
     private int collectWith(File stubTable, File sampleTable) throws Exception {
+        return collectTables(stubTable, sampleTable, null);
+    }
+
+    private int collectTables(File stubTable, File sampleTable, File classTable) throws Exception {
         HostStubCollector collector = new HostStubCollector();
         BundleLoader loader = new BundleLoader(FRAMEWORKS, new File("target/rootfs/catjam-collect")) {
             @Override
@@ -82,6 +96,9 @@ public class CatJamCollectTest {
         }
         if (sampleTable != null) {
             loader.addStubTable(sampleTable);
+        }
+        if (classTable != null) {
+            loader.addStubTable(classTable);
         }
 
         long start = System.currentTimeMillis();

@@ -29,6 +29,10 @@ import java.util.Map;
  *       默认值 = 符号名去下划线(UIKit/Foundation 通知名惯例, 真值抽查走 shared cache strings)</li>
  *   <li>data —— 数据常量(CGPointZero/CGRectNull 等), 逐 8 字节写入</li>
  *   <li>func-rect / func-scalar —— 函数桩: AAPCS64 sret(x8 出参) memcpy 32B / 标量返回 0</li>
+ *   <li>objc-class —— 类符号降级桩(_OBJC_CLASS_$_X / _OBJC_METACLASS_$_X):
+ *       经真实 runtime objc_allocateClassPair(NSObject) 分配+注册——isa 链/retain/
+ *       +alloc 继承 NSObject, 未实现的 selector 走 doesNotRecognizeSelector 诊断路径
+ *       (图形符号层 L1, CatJam 剩余缺口的构成主体)</li>
  * </ul>
  *
  * <p>内置函数条目: {@code ___isPlatformVersionAtLeast}(现代 SDK @available 门控,
@@ -66,7 +70,7 @@ public class HostStubStore implements HookListener {
         }
     }
 
-    enum Kind { CFSTRING, DATA, FUNC_RECT, FUNC_SCALAR }
+    enum Kind { CFSTRING, DATA, FUNC_RECT, FUNC_SCALAR, OBJC_CLASS }
 
     public HostStubStore(Emulator<?> emulator) {
         this.emulator = emulator;
@@ -147,6 +151,9 @@ public class HostStubStore implements HookListener {
                         kind = "rect".equals(cols.length > 2 ? cols[2].trim() : "")
                                 ? Kind.FUNC_RECT : Kind.FUNC_SCALAR;
                         break;
+                    case "objc-class":
+                        kind = Kind.OBJC_CLASS;
+                        break;
                     default:
                         throw new IOException("host stub table line " + lineno + ": unknown kind: " + line);
                 }
@@ -197,12 +204,79 @@ public class HostStubStore implements HookListener {
         }
         Entry entry = table.get(symbolName);
         if (entry == null) {
+            // _OBJC_METACLASS_$_X 映射到同表 _OBJC_CLASS_$_X 的元类
+            if (symbolName.startsWith("_OBJC_METACLASS_$_")) {
+                String className = symbolName.substring("_OBJC_METACLASS_$_".length());
+                if (table.containsKey("_OBJC_CLASS_$_" + className)) {
+                    long cls = getOrCreateObjcClass(svcMemory, className);
+                    return cls == 0 ? 0 : objectGetClass(cls);
+                }
+            }
             return 0;
+        }
+        if (entry.kind == Kind.OBJC_CLASS) {
+            return getOrCreateObjcClass(svcMemory, entry.symbol.substring("_OBJC_CLASS_$_".length()));
         }
         return cache.computeIfAbsent(symbolName, k -> synthesize(svcMemory, entry));
     }
 
     private final Map<String, Long> cache = new HashMap<>();
+    private final Map<String, Long> classCache = new HashMap<>();
+
+    /** 类符号降级桩: 真实 runtime 分配 NSObject 子类(缺 NSObject 时建根类)。 */
+    private long getOrCreateObjcClass(SvcMemory svcMemory, String className) {
+        Long cached = classCache.get(className);
+        if (cached != null) {
+            return cached;
+        }
+        Module libobjc = emulator.getMemory().findModule("libobjc.A.dylib");
+        if (libobjc == null) {
+            return 0;
+        }
+        Symbol allocate = libobjc.findSymbolByName("_objc_allocateClassPair", false);
+        Symbol registerCls = libobjc.findSymbolByName("_objc_registerClassPair", false);
+        if (allocate == null || registerCls == null) {
+            return 0;
+        }
+        long superclass = 0;
+        Symbol nsObject = libobjc.findSymbolByName("_OBJC_CLASS_$_NSObject", false);
+        if (nsObject != null) {
+            superclass = nsObject.getAddress();
+        }
+        UnidbgPointer namePtr = writeCString(svcMemory, className);
+        Number cls = allocate.call(emulator, superclass, namePtr.peer, 0);
+        if (cls == null || cls.longValue() == 0) {
+            return 0; // 失败不缓存: 保持未绑定, 收集器可观测
+        }
+        registerCls.call(emulator, cls.longValue());
+        classCache.put(className, cls.longValue());
+        return cls.longValue();
+    }
+
+    private long objectGetClass(long cls) {
+        Module libobjc = emulator.getMemory().findModule("libobjc.A.dylib");
+        Symbol objectGetClass = libobjc == null ? null
+                : libobjc.findSymbolByName("_object_getClass", false);
+        if (objectGetClass == null) {
+            return 0;
+        }
+        Number meta = objectGetClass.call(emulator, cls);
+        return meta == null ? 0 : meta.longValue();
+    }
+
+    private static UnidbgPointer writeCString(SvcMemory svcMemory, String s) {
+        byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
+        UnidbgPointer ptr = svcMemory.allocate(bytes.length + 1, "HostStubClass:" + s);
+        byte[] withNul = new byte[bytes.length + 1];
+        System.arraycopy(bytes, 0, withNul, 0, bytes.length);
+        ptr.write(0, withNul, 0, withNul.length);
+        return ptr;
+    }
+
+    public void addObjcClass(String className, String note) {
+        String symbol = "_OBJC_CLASS_$_" + className;
+        table.put(symbol, new Entry(symbol, Kind.OBJC_CLASS, null, note));
+    }
 
     private long synthesize(SvcMemory svcMemory, Entry entry) {
         switch (entry.kind) {

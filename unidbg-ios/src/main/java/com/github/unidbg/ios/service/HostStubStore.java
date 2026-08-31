@@ -28,7 +28,8 @@ import java.util.Map;
  *       (isa=___CFConstantStringClassReference, flags=0x7c8, 经 WallCrawler 实证);
  *       默认值 = 符号名去下划线(UIKit/Foundation 通知名惯例, 真值抽查走 shared cache strings)</li>
  *   <li>data —— 数据常量(CGPointZero/CGRectNull 等), 逐 8 字节写入</li>
- *   <li>func-rect / func-scalar —— 函数桩: AAPCS64 sret(x8 出参) memcpy 32B / 标量返回 0</li>
+ *   <li>func-rect / func-scalar / func-identity —— 函数桩: AAPCS64 sret(x8 出参)
+ *       memcpy 32B / 标量返回 0 / 恒等返回 x0(objc_opt_self 等自反语义)</li>
  *   <li>objc-class —— 类符号降级桩(_OBJC_CLASS_$_X / _OBJC_METACLASS_$_X):
  *       经真实 runtime objc_allocateClassPair(NSObject) 分配+注册——isa 链/retain/
  *       +alloc 继承 NSObject, 未实现的 selector 走 doesNotRecognizeSelector 诊断路径
@@ -70,7 +71,7 @@ public class HostStubStore implements HookListener {
         }
     }
 
-    enum Kind { CFSTRING, DATA, FUNC_RECT, FUNC_SCALAR, OBJC_CLASS }
+    enum Kind { CFSTRING, DATA, FUNC_RECT, FUNC_SCALAR, FUNC_IDENTITY, OBJC_CLASS }
 
     public HostStubStore(Emulator<?> emulator) {
         this.emulator = emulator;
@@ -148,8 +149,10 @@ public class HostStubStore implements HookListener {
                         kind = Kind.DATA;
                         break;
                     case "func":
-                        kind = "rect".equals(cols.length > 2 ? cols[2].trim() : "")
-                                ? Kind.FUNC_RECT : Kind.FUNC_SCALAR;
+                        String subtype = cols.length > 2 ? cols[2].trim() : "";
+                        kind = "rect".equals(subtype) ? Kind.FUNC_RECT
+                                : "identity".equals(subtype) ? Kind.FUNC_IDENTITY
+                                : Kind.FUNC_SCALAR;
                         break;
                     case "objc-class":
                         kind = Kind.OBJC_CLASS;
@@ -191,6 +194,11 @@ public class HostStubStore implements HookListener {
 
     public void addFunc(String symbol, boolean rectToRect, String note) {
         table.put(symbol, new Entry(symbol, rectToRect ? Kind.FUNC_RECT : Kind.FUNC_SCALAR, null, note));
+    }
+
+    /** 恒等函数桩: 返回 x0(objc_opt_self 等自反语义)。 */
+    public void addIdentityFunc(String symbol, String note) {
+        table.put(symbol, new Entry(symbol, Kind.FUNC_IDENTITY, null, note));
     }
 
     public int size() {
@@ -245,12 +253,23 @@ public class HostStubStore implements HookListener {
         }
         UnidbgPointer namePtr = writeCString(svcMemory, className);
         Number cls = allocate.call(emulator, superclass, namePtr.peer, 0);
-        if (cls == null || cls.longValue() == 0) {
-            return 0; // 失败不缓存: 保持未绑定, 收集器可观测
+        long clsPtr = cls == null ? 0 : cls.longValue();
+        if (clsPtr != 0) {
+            registerCls.call(emulator, clsPtr);
+        } else {
+            // allocateClassPair 同名类已存在时返回 nil(实证: UnityFramework 自带
+            // CALayer shim、基座 libdispatch 有 OS_dispatch_queue)—— 回退取现存类
+            Symbol getClass = libobjc.findSymbolByName("_objc_getClass", false);
+            if (getClass != null) {
+                Number existing = getClass.call(emulator, namePtr.peer);
+                clsPtr = existing == null ? 0 : existing.longValue();
+            }
+            if (clsPtr == 0) {
+                return 0;
+            }
         }
-        registerCls.call(emulator, cls.longValue());
-        classCache.put(className, cls.longValue());
-        return cls.longValue();
+        classCache.put(className, clsPtr);
+        return clsPtr;
     }
 
     private long objectGetClass(long cls) {
@@ -286,6 +305,7 @@ public class HostStubStore implements HookListener {
                 return synthesizeData(svcMemory, entry);
             case FUNC_RECT:
             case FUNC_SCALAR:
+            case FUNC_IDENTITY:
                 return synthesizeFunc(svcMemory, entry);
             default:
                 return 0;
@@ -331,9 +351,13 @@ public class HostStubStore implements HookListener {
 
     private long synthesizeFunc(SvcMemory svcMemory, Entry entry) {
         final boolean isRect = entry.kind == Kind.FUNC_RECT;
+        final boolean isIdentity = entry.kind == Kind.FUNC_IDENTITY;
         return svcMemory.registerSvc(new Arm64Svc(entry.symbol.substring(1)) {
             @Override
             public long handle(Emulator<?> e) {
+                if (isIdentity) {
+                    return e.getContext().getLongArg(0);
+                }
                 if (isRect) {
                     long out = e.getContext().getLongByReg(unicorn.Arm64Const.UC_ARM64_REG_X8);
                     long in = e.getContext().getLongArg(0);

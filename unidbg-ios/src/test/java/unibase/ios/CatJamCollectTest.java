@@ -69,19 +69,32 @@ public class CatJamCollectTest {
                         + " (较 bare 清零 " + (bare - withClasses) + " = "
                         + (100 * (bare - withClasses) / bare) + "%)");
                 assertTrue("类降级桩应进一步清零", withClasses < sample);
+
+                // 第五步: UTType 真值表(131, macOS API 抽取) + 杂项审核表(99: CA/CT/ImageIO/
+                // Security 惯例值 + CMTime/单位阵数据 + CG no-op/objc internals 函数)
+                File uttypeTable = new File(fullTable.getParentFile(), "catjam_uttypes.tsv");
+                File miscTable = new File(fullTable.getParentFile(), "catjam_misc.tsv");
+                if (uttypeTable.isFile() && miscTable.isFile()) {
+                    int withMisc = collectTables(fullTable, sampleTable,
+                            new File[]{classTable, uttypeTable, miscTable});
+                    System.out.println("[CATJAM] misc(+UTType 真值/杂项审核): unbound = " + withMisc
+                            + " (较 bare 清零 " + (bare - withMisc) + " = "
+                            + (100 * (bare - withMisc) / bare) + "%)");
+                    assertTrue("UTType/杂项表应进一步清零", withMisc < withClasses);
+                }
             }
         }
     }
 
     private int collect(File stubTable) throws Exception {
-        return collectTables(stubTable, null, null);
+        return collectTables(stubTable, null);
     }
 
     private int collectWith(File stubTable, File sampleTable) throws Exception {
-        return collectTables(stubTable, sampleTable, null);
+        return collectTables(stubTable, sampleTable, new File[0]);
     }
 
-    private int collectTables(File stubTable, File sampleTable, File classTable) throws Exception {
+    private int collectTables(File stubTable, File sampleTable, File... extraTables) throws Exception {
         HostStubCollector collector = new HostStubCollector();
         BundleLoader loader = new BundleLoader(FRAMEWORKS, new File("target/rootfs/catjam-collect")) {
             @Override
@@ -97,8 +110,10 @@ public class CatJamCollectTest {
         if (sampleTable != null) {
             loader.addStubTable(sampleTable);
         }
-        if (classTable != null) {
-            loader.addStubTable(classTable);
+        for (File extra : extraTables) {
+            if (extra != null && extra.isFile()) {
+                loader.addStubTable(extra);
+            }
         }
 
         long start = System.currentTimeMillis();

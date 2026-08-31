@@ -245,6 +245,9 @@ public class MachOLoader extends AbstractLoader<DarwinFileIO> implements Memory,
                 }
                 LibraryFile neededLibraryFile = resolveLibrary(libraryFile, neededLibrary, Collections.singletonList(FilenameUtils.getFullPath(libraryFile.getPath())));
                 if (neededLibraryFile != null) {
+                    if (library.weak && isWeakLibraryBeyondFingerprint(neededLibraryFile)) {
+                        continue;
+                    }
                     MachOModule needed = loadInternalPhase(neededLibraryFile, true, false, Collections.emptySet());
                     needed.addReferenceCount();
 
@@ -310,9 +313,36 @@ public class MachOLoader extends AbstractLoader<DarwinFileIO> implements Memory,
         }
     }
 
+    /** 弱链接库 minos-vs-指纹 判定缓存(path → skip)。 */
+    private final Map<String, Boolean> weakVersionSkips = new HashMap<>();
+
+    private boolean isWeakLibraryBeyondFingerprint(LibraryFile candidate) {
+        Boolean cached = weakVersionSkips.get(candidate.getPath());
+        if (cached != null) {
+            return cached;
+        }
+        OSVersion fingerprint = getOSVersion();
+        boolean skip = false;
+        try {
+            MachO machO = new MachO(new ByteBufferKaitaiStream(candidate.mapBuffer()));
+            for (MachO.LoadCommand command : machO.loadCommands()) {
+                if (command.type() == MachO.LoadCommandType.BUILD_VERSION
+                        && command.body() instanceof MachO.BuildVersionCommand) {
+                    MachO.Version minos = ((MachO.BuildVersionCommand) command.body()).minos();
+                    skip = minos.major() > fingerprint.major
+                            || (minos.major() == fingerprint.major && minos.minor() > fingerprint.minor);
+                    break;
+                }
+            }
+        } catch (Exception e) {
+            log.debug("parse minos failed for {}, keep loading", candidate.getPath(), e);
+        }
+        weakVersionSkips.put(candidate.getPath(), skip);
+        return skip;
+    }
+
     private MachOModule loadInternalPhase(LibraryFile libraryFile, ByteBuffer buffer,
-                                          boolean loadNeeded, boolean checkBootstrap, Collection<String> parentRpath) throws IOException {
-        MachO machO = new MachO(new ByteBufferKaitaiStream(buffer));
+                                          boolean loadNeeded, boolean checkBootstrap, Collection<String> parentRpath) throws IOException {        MachO machO = new MachO(new ByteBufferKaitaiStream(buffer));
         MachO.MagicType magic = machO.magic();
         switch (magic) {
             case FAT_BE:
@@ -758,6 +788,15 @@ public class MachOLoader extends AbstractLoader<DarwinFileIO> implements Memory,
                 }
                 LibraryFile neededLibraryFile = resolveLibrary(libraryFile, neededLibrary, rpathSet);
                 if (neededLibraryFile != null) {
+                    if (library.weak && isWeakLibraryBeyondFingerprint(neededLibraryFile)) {
+                        // 弱链接候选库 minos 高于虚拟指纹: 同真实低版本设备上库不存在, 跳过加载
+                        // (与 isPlatformVersionAtLeast 桩同一"能低则低"策略; 实证: 基座 7.1 环境
+                        //  加载 16 时代 libswift_RegexParser 造成 38 个 swift 原语缺口)
+                        if (log.isDebugEnabled()) {
+                            log.debug("{} skip weak dependency {} beyond fingerprint {}", dyId, neededLibrary, getOSVersion());
+                        }
+                        continue;
+                    }
                     MachOModule needed = loadInternalPhase(neededLibraryFile, true, false, rpathSet);
                     needed.addReferenceCount();
                     neededLibraries.put(FilenameUtils.getBaseName(needed.name), needed);

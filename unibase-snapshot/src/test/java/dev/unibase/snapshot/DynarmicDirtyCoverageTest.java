@@ -3,6 +3,7 @@ package dev.unibase.snapshot;
 import com.github.unidbg.AndroidEmulator;
 import com.github.unidbg.arm.backend.Backend;
 import com.github.unidbg.arm.backend.DynarmicFactory;
+import com.github.unidbg.arm.backend.Unicorn2Factory;
 import com.github.unidbg.linux.android.AndroidEmulatorBuilder;
 import com.github.unidbg.linux.android.AndroidResolver;
 import com.github.unidbg.memory.Memory;
@@ -31,6 +32,7 @@ public class DynarmicDirtyCoverageTest {
         AndroidEmulator emulator = AndroidEmulatorBuilder.for64Bit()
                 .setProcessName("dirty-coverage")
                 .addBackendFactory(new DynarmicFactory(true))
+                .addBackendFactory(new Unicorn2Factory(true)) // dynarmic 不可用平台的回退
                 .build();
         try {
             Memory memory = emulator.getMemory();

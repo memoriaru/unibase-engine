@@ -38,7 +38,10 @@ public class EmulatorSnapshotDirtyTest {
                 new EmuFactory() {
                     @Override public AndroidEmulator create() {
                         return AndroidEmulatorBuilder.for64Bit().setProcessName("snapshot-dirty-dyn")
-                                .addBackendFactory(new DynarmicFactory(true)).build();
+                                // dynarmic native 不可用的平台(如 macos arm64, 见 DynarmicFactory)
+                                // 由下一工厂回退 unicorn2 —— 测试断言与后端无关, 两种路径都正确
+                                .addBackendFactory(new DynarmicFactory(true))
+                                .addBackendFactory(new Unicorn2Factory(true)).build();
                     }
                     @Override public void close() {}
                 },

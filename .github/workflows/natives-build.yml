@@ -1,0 +1,82 @@
+# natives 构建: 在原生架构 runner 上重建仓内预编译 natives(按需, workflow_dispatch)
+#
+# 背景: dynarmic 的 JIT 后端与宿主 CPU 架构绑定(x64 host 产 x64 后端, arm64 host 产
+# a64 后端), 无法在 Intel mac 上交叉编译 arm64 产物; 而 CI 实证上游 Xcode26 重建的
+# osx_arm64/libdynarmic.dylib 在 macos-latest 装载失败(见 DynarmicFactory 容错,
+# b0d53bc7)。本工作流在 arm64 runner 上用本仓源码重建并回写。
+#
+# 用法: Actions → natives-build → Run workflow(选分支, 默认 dynarmic-osx-arm64)
+# 产物: 直接 commit 回触发分支; engine-ci 随后的 macos 矩阵跑 :unibase-snapshot:test
+# 即为端到端回归(快照脏页测试会真实装载 arm64 dynarmic)。
+name: natives-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: '构建目标'
+        required: false
+        default: 'dynarmic-osx-arm64'
+
+permissions:
+  contents: write
+
+jobs:
+  dynarmic-osx-arm64:
+    if: github.event.inputs.target == 'dynarmic-osx-arm64'
+    runs-on: macos-14  # 必须 arm64(dynarmic a64 后端按宿主架构编译)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone yuzu-dynarmic (same source as Dockerfile)
+        run: git clone --recursive --depth 1 https://github.com/zhkl0228/yuzu-dynarmic /tmp/dynarmic
+
+      - name: Install boost (find_package(Boost) hard dependency, not bundled)
+        run: brew install boost
+
+      - name: Build static libraries (arm64 native)
+        run: |
+          cmake -S /tmp/dynarmic -B /tmp/dynarmic/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DDYNARMIC_TESTS=OFF \
+            -DDYNARMIC_WARNINGS_AS_ERRORS=OFF \
+            -DDYNARMIC_USE_BUNDLED_EXTERNALS=ON
+          cmake --build /tmp/dynarmic/build -j$(sysctl -n hw.ncpu)
+
+      - name: Link JNI bridge dylib
+        run: |
+          cd backend/dynarmic/src/main/native/dynarmic
+          xcrun clang++ -arch arm64 -o /tmp/libdynarmic.dylib -shared -std=c++20 -O2 \
+            -mmacosx-version-min=13.0 \
+            -I /tmp/dynarmic/src \
+            -I /tmp/dynarmic/externals/fmt/include \
+            -I "$JAVA_HOME/include" -I "$JAVA_HOME/include/darwin" \
+            -DDYNARMIC_MASTER \
+            dynarmic.cpp arm_dynarmic_cp15.cpp \
+            /tmp/dynarmic/build/src/dynarmic/libdynarmic.a \
+            /tmp/dynarmic/build/externals/mcl/src/libmcl.a \
+            /tmp/dynarmic/build/externals/fmt/libfmt.a
+
+      - name: Sanity checks
+        run: |
+          file /tmp/libdynarmic.dylib | grep -q "arm64"
+          nm -gU /tmp/libdynarmic.dylib | grep -q "Java_com_github_unidbg_arm_backend_dynarmic_Dynarmic_nativeInitialize"
+          nm -gU /tmp/libdynarmic.dylib | grep -q "reg_1set_1pc64"
+          echo "arch + JNI symbols OK"
+
+      - name: End-to-end validation (load real arm64 dylib in tests)
+        run: |
+          cp /tmp/libdynarmic.dylib backend/dynarmic/src/main/resources/natives/osx_arm64/libdynarmic.dylib
+          ./gradlew :unibase-snapshot:test --no-daemon
+
+      - name: Commit rebuilt native
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add backend/dynarmic/src/main/resources/natives/osx_arm64/libdynarmic.dylib
+          git commit -m "build(natives): 重建 osx_arm64 libdynarmic.dylib (arm64 runner)
+
+          source: zhkl0228/yuzu-dynarmic $(git -C /tmp/dynarmic rev-parse HEAD)
+          built by natives-build workflow, validated by :unibase-snapshot:test"
+          git push

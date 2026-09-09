@@ -8,6 +8,7 @@
 
 #include <stdlib.h>
 #include <unistd.h>
+#include <time.h>
 
 #if defined(_WIN32) || defined(_WIN64)
 #include "mman.h"
@@ -348,7 +349,10 @@ public:
     }
 
     void AddTicks(u64 ticks) override {
+        vtick += ticks;
     }
+
+    u64 vtick = 0;
 
     u64 GetTicksRemaining() override {
         return 0x10000000000ULL;
@@ -625,6 +629,12 @@ public:
         cachedJVM->DetachCurrentThread();
     }
 
+    // unibase ②虚拟时钟(修正): 原恒定值(delta=0)是确定性检测点。改用宿主
+    // 单调钟派生 —— 与 unicorn2(QEMU_CLOCK_VIRTUAL 跟随宿主钟)行为对齐,
+    // 过"计时器恒定"朴素探测; 指令数关联可检测性为两后端共同已知边界
+    // (归 ③深改档: qemu timer patch / TCG icount)。AddTicks 实测不被
+    // JIT 调用(yuzu 的 EmitAddCycles 只减栈槽, 结算走 GetTicksRemaining
+    // 且 unidbg 给恒定巨值), 指令计数路不通 —— 实证见 EmulatorFingerprintProbeTest。
     void AddTicks(u64 ticks) override {
     }
 
@@ -633,7 +643,10 @@ public:
     }
 
     u64 GetCNTPCT() override {
-        return 0x10000000000ULL;
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        // ns/24 ≈ 19.2MHz 计数频率的量级(缩放避免 u64 溢出, 584 年不回绕)
+        return (u64)((ts.tv_sec * 1000000000ULL + ts.tv_nsec) / 24);
     }
 
     u64 tpidrro_el0 = 0;

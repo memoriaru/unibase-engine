@@ -19,6 +19,18 @@ cd "$SCRIPT_DIR"
 
 # --- Build dynarmic static libraries ---
 
+# unibase ②虚拟时钟: 补 CNTVCT_EL0 分支(yuzu-dynarmic 上游无此寄存器,
+# 缺失时 guest 读 CNTVCT 走 interpreter fallback 报 UDEF)
+if [ -d "$DYNARMIC_HOME/.git" ] && [ -f "$SCRIPT_DIR/dynarmic-cntvct.patch" ]; then
+    if ! git -C "$DYNARMIC_HOME" apply --check "$SCRIPT_DIR/dynarmic-cntvct.patch" 2>/dev/null; then
+        git -C "$DYNARMIC_HOME" apply --reverse --check "$SCRIPT_DIR/dynarmic-cntvct.patch" 2>/dev/null \
+          && echo "cntvct patch already applied" || echo "WARN: cntvct patch not applicable"
+    else
+        git -C "$DYNARMIC_HOME" apply "$SCRIPT_DIR/dynarmic-cntvct.patch" \
+          && echo "cntvct patch applied"
+    fi
+fi
+
 CMAKE_COMMON_ARGS="-DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DDYNARMIC_TESTS=OFF -DDYNARMIC_WARNINGS_AS_ERRORS=OFF -DDYNARMIC_USE_BUNDLED_EXTERNALS=ON"
 
 build_dynarmic_lib() {

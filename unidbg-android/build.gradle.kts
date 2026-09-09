@@ -38,6 +38,10 @@ tasks.register("printTestClasspath") {
 // Maven 布局相对路径 target/*)。P0 的 unidbg-android 测试采用显式白名单, 阶段1逐步扩容;
 // 全量套件仍可在本地用排除法排查(见 docs/baseline-local.md)。
 tasks.withType<Test>().configureEach {
+    // 探针矩阵模式透传(EmulatorFingerprintProbeTest): 未传时不设 —— 让类内
+    // 安全默认生效(uc=0x1/dyn-timer=0x1/dyn-leak=0x0), 避免致命探测进 CI
+    System.getProperty("unibase.probe.mode.uc")?.let { systemProperty("unibase.probe.mode.uc", it) }
+    System.getProperty("unibase.probe.mode.dyn")?.let { systemProperty("unibase.probe.mode.dyn", it) }
     include(
         "com/github/unidbg/android/EmulatorTest*",
         "com/github/unidbg/android/AndroidRelocationTest*",
@@ -49,6 +53,7 @@ tasks.withType<Test>().configureEach {
         "com/github/unidbg/android/ModernElfTest*",
         "com/github/unidbg/android/FastTracerBinaryTest*",
         "com/github/unidbg/android/FastTracerNativeTest*",
+        "com/github/unidbg/android/EmulatorFingerprintProbeTest*",
         "com/github/unidbg/android/BusyBoxTest*",
         "com/github/unidbg/android/RunExecutable*",
         "com/github/unidbg/android/struct/*",

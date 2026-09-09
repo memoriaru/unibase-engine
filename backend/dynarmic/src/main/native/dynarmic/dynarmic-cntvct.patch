@@ -1,0 +1,24 @@
+diff --git a/src/dynarmic/frontend/A64/translate/impl/system.cpp b/src/dynarmic/frontend/A64/translate/impl/system.cpp
+index 9c35a8f..000d17f 100644
+--- a/src/dynarmic/frontend/A64/translate/impl/system.cpp
++++ b/src/dynarmic/frontend/A64/translate/impl/system.cpp
+@@ -14,6 +14,8 @@ enum class SystemRegisterEncoding : u32 {
+     CNTFRQ_EL0 = 0b11'1110'011'000'0000,
+     // Counter-timer Physical Count register
+     CNTPCT_EL0 = 0b11'1110'011'001'0000,
++    // Counter-timer Virtual Count register (unibase: single-core view equals CNTPCT)
++    CNTVCT_EL0 = 0b11'1110'011'010'0000,
+     // Cache Type Register
+     CTR_EL0 = 0b11'0000'011'001'0000,
+     // Data Cache Zero ID register
+@@ -133,6 +135,10 @@ bool TranslatorVisitor::MRS(Imm<1> o0, Imm<3> op1, Imm<4> CRn, Imm<4> CRm, Imm<3
+         }
+         X(64, Rt, ir.GetCNTPCT());
+         return true;
++    case SystemRegisterEncoding::CNTVCT_EL0:
++        // unibase: CNTVCT served by the same virtual clock as CNTPCT
++        X(64, Rt, ir.GetCNTPCT());
++        return true;
+     case SystemRegisterEncoding::CTR_EL0:
+         X(32, Rt, ir.GetCTR());
+         return true;

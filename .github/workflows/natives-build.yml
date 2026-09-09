@@ -34,6 +34,9 @@ jobs:
       - name: Install boost (find_package(Boost) hard dependency, not bundled)
         run: brew install boost
 
+      - name: Apply CNTVCT patch (virtual clock for guest CNTVCT_EL0)
+        run: git -C /tmp/dynarmic apply backend/dynarmic/src/main/native/dynarmic/dynarmic-cntvct.patch
+
       - name: Build static libraries (arm64 native)
         run: |
           cmake -S /tmp/dynarmic -B /tmp/dynarmic/build \

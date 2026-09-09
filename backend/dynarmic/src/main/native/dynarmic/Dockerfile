@@ -35,6 +35,8 @@ ENV PATH=/usr/local/bin:/opt/rh/devtoolset/root/usr/bin:$PATH \
 
 ARG DYNARMIC_COMMIT=unknown
 RUN git clone --recursive --depth 1 https://github.com/zhkl0228/yuzu-dynarmic /build/dynarmic
+# 注意: 本镜像 pull 常见网络超时(centos:7 EOL), 本地可用 rust:slim + apt
+# (libboost-dev + openjdk-17) 等效构建, 见 unibase 会话记录 2026-09-09。
 # unibase ②虚拟时钟: 补 CNTVCT_EL0 分支(与 build.sh/natives-build.yml 同一补丁)
 COPY dynarmic-cntvct.patch /tmp/cntvct.patch
 RUN git -C /build/dynarmic apply /tmp/cntvct.patch

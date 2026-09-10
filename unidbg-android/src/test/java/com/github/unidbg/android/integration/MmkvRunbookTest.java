@@ -5,7 +5,10 @@ import com.github.unidbg.linux.android.AndroidEmulatorBuilder;
 import com.github.unidbg.linux.android.AndroidResolver;
 import com.github.unidbg.linux.android.dvm.DalvikModule;
 import com.github.unidbg.linux.android.dvm.DvmClass;
+import com.github.unidbg.linux.android.dvm.BaseVM;
+import com.github.unidbg.linux.android.dvm.DvmClass;
 import com.github.unidbg.linux.android.dvm.VM;
+import com.github.unidbg.linux.android.dvm.VaList;
 import com.github.unidbg.memory.Memory;
 import org.junit.Test;
 
@@ -49,8 +52,18 @@ public class MmkvRunbookTest {
             Memory memory = emulator.getMemory();
             memory.setLibraryResolver(new AndroidResolver(23));
             VM vm = emulator.createDalvikVM();
-            // Runbook Step4 口径: FallbackJni 先跑通(WARN 什么补什么), 零手工桩
-            vm.setJni(new com.github.unidbg.linux.android.dvm.FallbackJni());
+            // Runbook Step4 口径: FallbackJni 先跑通(WARN 什么补什么), 零手工桩。
+            // 实测唯一缺口 = mmkvLogImp(日志回调, SO 打 logcat 用) —— 显式 no-op 后零缺口。
+            vm.setJni(new com.github.unidbg.linux.android.dvm.FallbackJni() {
+                @Override
+                public void callStaticVoidMethodV(BaseVM vm, DvmClass dvmClass,
+                                                  String signature, VaList vaList) {
+                    if (signature.contains("mmkvLogImp")) {
+                        return; // 日志回调 no-op
+                    }
+                    super.callStaticVoidMethodV(vm, dvmClass, signature, vaList);
+                }
+            });
             DalvikModule dm = vm.loadLibrary(soFile(), false);
             dm.callJNI_OnLoad(emulator);
 

@@ -52,6 +52,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import unicorn.Arm64Const;
 
 public abstract class AndroidSyscallHandler extends UnixSyscallHandler<AndroidFileIO> implements SyscallHandler<AndroidFileIO> {
 
@@ -307,6 +308,34 @@ public abstract class AndroidSyscallHandler extends UnixSyscallHandler<AndroidFi
         }
 
         Task task = emulator.get(Task.TASK_KEY);
+        // unibase 实验(X-Argus): 停等点抓调用栈 —— PC/LR/SP + 栈上 LR 链,
+        // 定位等待函数与期望的生产者(门控 unibase.futexdump=true)
+        if (Boolean.getBoolean("unibase.futexdump") && task != null) {
+            try {
+                StringBuilder sb = new StringBuilder("\n[FUTEXDUMP] task=" + task + " uaddr=" + uaddr
+                        + " old=" + old + " val=" + val + " cmd=" + cmd);
+                for (int r = 0; r <= 18; r++) {
+                    long v = emulator.getBackend().reg_read(Arm64Const.UC_ARM64_REG_X0 + r).longValue();
+                    sb.append(String.format("\n  x%d=0x%x", r, v));
+                }
+                long sp = emulator.getBackend().reg_read(Arm64Const.UC_ARM64_REG_SP).longValue();
+                long lr = emulator.getBackend().reg_read(Arm64Const.UC_ARM64_REG_LR).longValue();
+                sb.append(String.format("\n  lr=0x%x sp=0x%x", lr, sp));
+                // 栈上回溯: 扫 SP 起 512B 内的"像返回地址"的值(SO 基址范围内)
+                com.github.unidbg.pointer.UnidbgPointer spU = com.github.unidbg.pointer.UnidbgPointer.pointer(emulator, sp);
+                if (spU != null) {
+                    for (int off = 0; off < 512; off += 8) {
+                        long v = spU.getLong(off);
+                        if (v > 0x12000000L && v < 0x12400000L) {
+                            sb.append(String.format("\n  [sp+0x%x]=0x%x (so+0x%x)", off, v, v - 0x12000000L));
+                        }
+                    }
+                }
+                System.out.println(sb);
+            } catch (Throwable t) {
+                System.out.println("[FUTEXDUMP] failed: " + t);
+            }
+        }
         switch (cmd) {
             case FUTEX_WAIT:
                 if (old != val) {

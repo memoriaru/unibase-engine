@@ -418,6 +418,12 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
         if (exception instanceof RuntimeException) {
             throw (RuntimeException) exception;
         }
+
+        // unibase experiment: unknown syscall in thread context → return -ENOSYS
+        // instead of leaving X0 as garbage (prevents downstream FETCH_UNMAPPED)
+        if (exception == null) {
+            backend.reg_write(unicorn.Arm64Const.UC_ARM64_REG_X0, -38); // -ENOSYS
+        }
     }
 
     private static final int RLIMIT_STACK = 3; /* max stack size */
@@ -679,6 +685,7 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
                     com.github.unidbg.linux.thread.BionicThread.rawContext(
                             emulator, entryPC, childStack, tls, ctid, threadId);
             emulator.getThreadDispatcher().addThread(t);
+            RAW_CLONE_TIDS.add((long) threadId);
             RAW_CLONE_TIDS.add((long) threadId);
             System.out.println("[THREADS] bionic_clone dispatched(rawContext) tid=" + threadId
                     + " entryPC=0x" + Long.toHexString(entryPC) + " childStack=" + childStack);

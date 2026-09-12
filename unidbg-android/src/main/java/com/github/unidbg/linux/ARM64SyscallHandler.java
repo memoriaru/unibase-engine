@@ -56,6 +56,9 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ARM64SyscallHandler.class);
 
+    /** unibase experiment (X-Argus): raw clone dispatch order */
+    public static final java.util.List<Long> RAW_CLONE_TIDS = new java.util.concurrent.CopyOnWriteArrayList<>();
+
     private final SvcMemory svcMemory;
 
     public ARM64SyscallHandler(SvcMemory svcMemory) {
@@ -676,6 +679,7 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
                     com.github.unidbg.linux.thread.BionicThread.rawContext(
                             emulator, entryPC, childStack, tls, ctid, threadId);
             emulator.getThreadDispatcher().addThread(t);
+            RAW_CLONE_TIDS.add((long) threadId);
             System.out.println("[THREADS] bionic_clone dispatched(rawContext) tid=" + threadId
                     + " entryPC=0x" + Long.toHexString(entryPC) + " childStack=" + childStack);
         }

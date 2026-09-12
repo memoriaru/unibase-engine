@@ -15,6 +15,14 @@ public abstract class FutexWaiter extends AndroidWaiter {
         this.val = val;
     }
 
+    /**
+     * unibase 实验(X-Argus 研究): 强制翻转等待谓词 —— 写 val+1 使 canDispatch
+     * 为真, 唤醒等待者走一步; 它完成一步后会以新期望重新 futex_wait(握手链)。
+     */
+    public void kick() {
+        uaddr.setInt(0, val + 1);
+    }
+
     @Override
     public boolean canDispatch() {
         if (wokenUp) {

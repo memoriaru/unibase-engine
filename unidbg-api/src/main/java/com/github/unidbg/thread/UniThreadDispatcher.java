@@ -1,6 +1,7 @@
 package com.github.unidbg.thread;
 
 import com.github.unidbg.AbstractEmulator;
+import com.github.unidbg.Module;
 import com.github.unidbg.signal.SigSet;
 import com.github.unidbg.signal.SignalOps;
 import com.github.unidbg.signal.SignalTask;
@@ -83,6 +84,11 @@ public class UniThreadDispatcher implements ThreadDispatcher {
 
     private RunnableTask runningTask;
 
+    // unibase 实验: unibase.xunlock=<hex offset> 时启用每轮写解锁
+    private final long xunlockOffset = parseXunlock();
+    private final boolean futexKick = Boolean.getBoolean("unibase.futexkick");
+    private boolean xunlockDebugged;
+
     @Override
     public RunnableTask getRunningTask() {
         return runningTask;
@@ -129,6 +135,45 @@ public class UniThreadDispatcher implements ThreadDispatcher {
         try {
             long start = System.currentTimeMillis();
             while (true) {
+                // unibase 实验(X-Argus): unibase.futexkick=true 时, 每轮对所有
+                // parked 的 FutexWaiter 踢一脚(写 val+1) —— 驱动握手链逐环推进
+                if (futexKick) {
+                    for (Task t : taskList) {
+                        try {
+                            Waiter w = t.getWaiter();
+                            // FutexWaiter 在 unidbg-android(api 不反向依赖), 反射调 kick()
+                            if (w != null && w.getClass().getSimpleName().equals("FutexWaiter")) {
+                                w.getClass().getMethod("kick").invoke(w);
+                            }
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                }
+                // unibase 实验(事项4 X-Argus): 每轮调度向 unibase.xunlock=<so内偏移hex>
+                // 指定的 SO 偏移写 int 1 —— FutexWaiter.canDispatch 每轮重查 guest 内存,
+                // 宿主同线程写值即翻转谓词续跑阻塞线程(研究用, 门控默认关)
+                if (xunlockOffset >= 0) {
+                    try {
+                        Module so = emulator.getMemory().findModule("libmetasec_ml.so");
+                        if (so != null) {
+                            byte[] one = {1, 0, 0, 0};
+                            emulator.getBackend().mem_write(so.base + xunlockOffset, one);
+                            if (!xunlockDebugged) {
+                                xunlockDebugged = true;
+                                System.err.println("[XUNLOCK] first write at SO+0x"
+                                        + Long.toHexString(xunlockOffset) + " base=0x" + Long.toHexString(so.base));
+                            }
+                        } else if (!xunlockDebugged) {
+                            xunlockDebugged = true;
+                            System.err.println("[XUNLOCK] module not found");
+                        }
+                    } catch (Throwable t) {
+                        if (!xunlockDebugged) {
+                            xunlockDebugged = true;
+                            System.err.println("[XUNLOCK] write failed: " + t);
+                        }
+                    }
+                }
                 // 先把新创建的后台线程搬入调度队列(主任务完成后 drain 的关键 ——
                 // 此前 threadTaskList 永远不会被搬入, 子线程让出后也无人继续调度)
                 Collections.reverse(threadTaskList);
@@ -272,6 +317,18 @@ public class UniThreadDispatcher implements ThreadDispatcher {
      */
     private void traceMarker(RunnableTask task) {
         emulator.getBackend().traceMarker(task instanceof Task ? ((Task) task).getId() : 0);
+    }
+
+    private static long parseXunlock() {
+        String v = System.getProperty("unibase.xunlock");
+        if (v == null || v.isEmpty()) {
+            return -1;
+        }
+        try {
+            return Long.parseLong(v.replaceFirst("^0x", ""), 16);
+        } catch (NumberFormatException e) {
+            return -1;
+        }
     }
 
     private SigSet mainThreadSigMaskSet;
